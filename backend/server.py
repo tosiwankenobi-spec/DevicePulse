@@ -117,6 +117,26 @@ class Recommendation(BaseModel):
 class CleanupRequest(BaseModel):
     categories: List[str]
     reclaimable_mb: float
+    device_id: Optional[str] = "anon"
+
+class HistoryEntry(BaseModel):
+    id: str
+    categories: List[str]
+    reclaimed_mb: float
+    completed_at: str
+
+class ReferralStatus(BaseModel):
+    device_id: str
+    code: str
+    invited_count: int
+    reward_days: int
+
+class ReminderPrefs(BaseModel):
+    device_id: str
+    low_storage: bool = True
+    weekly_cleanup: bool = True
+    after_downloads: bool = True
+    battery_alerts: bool = False
 
 
 # ==================== Helpers ====================
@@ -262,6 +282,7 @@ async def run_scan():
 async def run_clean(req: CleanupRequest):
     doc = {
         "id": str(uuid.uuid4()),
+        "device_id": req.device_id or "anon",
         "categories": req.categories,
         "reclaimed_mb": req.reclaimable_mb,
         "completed_at": datetime.now(timezone.utc).isoformat(),
@@ -274,6 +295,87 @@ async def run_clean(req: CleanupRequest):
         "health_before": 68,
         "completed_at": doc["completed_at"],
     }
+
+@api_router.get("/history", response_model=List[HistoryEntry])
+async def get_history(device_id: str = "anon"):
+    docs = await db.cleanups.find({"device_id": device_id}).sort("completed_at", -1).to_list(100)
+    return [
+        HistoryEntry(
+            id=d["id"],
+            categories=d.get("categories", []),
+            reclaimed_mb=d.get("reclaimed_mb", 0.0),
+            completed_at=d.get("completed_at", ""),
+        )
+        for d in docs
+    ]
+
+@api_router.get("/history/summary")
+async def get_history_summary(device_id: str = "anon"):
+    docs = await db.cleanups.find({"device_id": device_id}).to_list(1000)
+    total_reclaimed = sum(d.get("reclaimed_mb", 0.0) for d in docs)
+    return {
+        "total_cleanups": len(docs),
+        "total_reclaimed_mb": round(total_reclaimed, 1),
+        "total_reclaimed_gb": round(total_reclaimed / 1024, 2),
+    }
+
+def _referral_code(device_id: str) -> str:
+    seed = abs(hash(device_id)) % 100000
+    return f"PULSE{seed:05d}"
+
+@api_router.get("/referral/{device_id}", response_model=ReferralStatus)
+async def get_referral(device_id: str):
+    doc = await db.referrals.find_one({"device_id": device_id})
+    if not doc:
+        doc = {
+            "device_id": device_id,
+            "code": _referral_code(device_id),
+            "invited_count": 0,
+        }
+        await db.referrals.insert_one(doc.copy())
+    return ReferralStatus(
+        device_id=device_id,
+        code=doc["code"],
+        invited_count=doc.get("invited_count", 0),
+        reward_days=doc.get("invited_count", 0) * 7,
+    )
+
+@api_router.post("/referral/{device_id}/invite", response_model=ReferralStatus)
+async def record_invite(device_id: str):
+    doc = await db.referrals.find_one({"device_id": device_id})
+    if not doc:
+        doc = {"device_id": device_id, "code": _referral_code(device_id), "invited_count": 0}
+        await db.referrals.insert_one(doc.copy())
+    new_count = doc.get("invited_count", 0) + 1
+    await db.referrals.update_one({"device_id": device_id}, {"$set": {"invited_count": new_count}})
+    return ReferralStatus(
+        device_id=device_id,
+        code=doc["code"],
+        invited_count=new_count,
+        reward_days=new_count * 7,
+    )
+
+@api_router.get("/reminders/{device_id}", response_model=ReminderPrefs)
+async def get_reminders(device_id: str):
+    doc = await db.reminders.find_one({"device_id": device_id})
+    if not doc:
+        prefs = ReminderPrefs(device_id=device_id)
+        await db.reminders.insert_one(prefs.dict())
+        return prefs
+    return ReminderPrefs(
+        device_id=device_id,
+        low_storage=doc.get("low_storage", True),
+        weekly_cleanup=doc.get("weekly_cleanup", True),
+        after_downloads=doc.get("after_downloads", True),
+        battery_alerts=doc.get("battery_alerts", False),
+    )
+
+@api_router.put("/reminders/{device_id}", response_model=ReminderPrefs)
+async def update_reminders(device_id: str, prefs: ReminderPrefs):
+    data = prefs.dict()
+    data["device_id"] = device_id
+    await db.reminders.update_one({"device_id": device_id}, {"$set": data}, upsert=True)
+    return ReminderPrefs(**data)
 
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest):

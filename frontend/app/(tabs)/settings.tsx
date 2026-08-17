@@ -10,7 +10,6 @@ import { theme } from '@/src/theme';
 export default function Settings() {
   const router = useRouter();
   const [autoScan, setAutoScan] = React.useState(true);
-  const [notifs, setNotifs] = React.useState(true);
   const [haptics, setHaptics] = React.useState(true);
 
   return (
@@ -36,15 +35,22 @@ export default function Settings() {
             </LinearGradient>
           </Pressable>
 
+          <Text style={styles.section}>Your Progress</Text>
+          <View style={styles.card}>
+            <NavRow icon="time-outline" label="Scan history" onPress={() => router.push('/history')} testID="settings-history" />
+            <Divider />
+            <NavRow icon="gift-outline" label="Refer a friend" badge="Free Pro" onPress={() => router.push('/referral')} testID="settings-referral" />
+            <Divider />
+            <NavRow icon="grid-outline" label="Home screen widget" onPress={() => router.push('/widget-preview')} testID="settings-widget" />
+          </View>
+
           <Text style={styles.section}>Preferences</Text>
           <View style={styles.card}>
             <Row icon="scan-outline" label="Auto smart scan" desc="Weekly on Sunday">
               <Switch value={autoScan} onValueChange={setAutoScan} trackColor={{ true: theme.color.brand, false: theme.color.border }} thumbColor="#fff" testID="toggle-auto-scan" />
             </Row>
             <Divider />
-            <Row icon="notifications-outline" label="Notifications" desc="Get cleanup reminders">
-              <Switch value={notifs} onValueChange={setNotifs} trackColor={{ true: theme.color.brand, false: theme.color.border }} thumbColor="#fff" testID="toggle-notifications" />
-            </Row>
+            <NavRow icon="notifications-outline" label="Smart reminders" onPress={() => router.push('/reminders')} testID="settings-reminders" />
             <Divider />
             <Row icon="phone-portrait-outline" label="Haptic feedback" desc="Feel every tap">
               <Switch value={haptics} onValueChange={setHaptics} trackColor={{ true: theme.color.brand, false: theme.color.border }} thumbColor="#fff" testID="toggle-haptics" />
@@ -91,12 +97,17 @@ const Row = ({ icon, label, desc, children }: any) => (
   </View>
 );
 
-const NavRow = ({ icon, label, testID }: any) => (
-  <Pressable style={styles.row} testID={testID}>
+const NavRow = ({ icon, label, testID, onPress, badge }: any) => (
+  <Pressable style={styles.row} testID={testID} onPress={onPress}>
     <View style={styles.rowIcon}>
       <Ionicons name={icon} size={20} color={theme.color.brand} />
     </View>
     <Text style={[styles.rowLabel, { flex: 1 }]}>{label}</Text>
+    {badge && (
+      <View style={styles.navBadge}>
+        <Text style={styles.navBadgeText}>{badge}</Text>
+      </View>
+    )}
     <Ionicons name="chevron-forward" size={18} color={theme.color.onSurface3} />
   </Pressable>
 );
@@ -118,6 +129,8 @@ const styles = StyleSheet.create({
   rowIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: theme.color.brand3, alignItems: 'center', justifyContent: 'center' },
   rowLabel: { color: theme.color.onSurface, fontSize: 15, fontWeight: '600' },
   rowDesc: { color: theme.color.onSurface3, fontSize: 12, marginTop: 2 },
+  navBadge: { backgroundColor: theme.color.brand3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill, marginRight: 6 },
+  navBadgeText: { color: theme.color.brand, fontSize: 10, fontWeight: '700' },
   footer: { alignItems: 'center', marginTop: theme.space.xxl, gap: 6 },
   footerBrand: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '600' },
   footerCorp: { color: theme.color.onSurface3, fontSize: 11 },

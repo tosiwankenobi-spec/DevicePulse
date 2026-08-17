@@ -128,6 +128,20 @@ export default function Home() {
             </View>
           </GlassCard>
 
+          {/* Smart reminder banner */}
+          {storagePct >= 70 && (
+            <Pressable style={styles.reminderBanner} onPress={() => router.push('/smart-scan')} testID="home-reminder-banner">
+              <View style={styles.reminderIcon}>
+                <Ionicons name="notifications" size={18} color={theme.color.warning} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.reminderTitle}>Storage is filling up</Text>
+                <Text style={styles.reminderBody}>You&apos;re at {storagePct}% — a quick scan can free up space.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={theme.color.onSurface3} />
+            </Pressable>
+          )}
+
           {/* Stat grid */}
           <View style={styles.statGrid}>
             {stats.map((s) => (
@@ -211,4 +225,8 @@ const styles = StyleSheet.create({
   recTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700', flex: 1 },
   recBody: { color: theme.color.onSurface2, fontSize: 13, marginTop: 6, lineHeight: 19 },
   impactDot: { width: 8, height: 8, borderRadius: 4 },
+  reminderBanner: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: theme.space.lg, marginTop: theme.space.md, padding: theme.space.md, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.warning + '55' },
+  reminderIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: theme.color.warning + '22', alignItems: 'center', justifyContent: 'center' },
+  reminderTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
+  reminderBody: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
 });

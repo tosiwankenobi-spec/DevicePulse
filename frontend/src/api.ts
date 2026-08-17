@@ -17,8 +17,15 @@ export const api = {
   battery: () => req<any>('/device/battery'),
   security: () => req<any>('/device/security'),
   runScan: () => req<any>('/device/scan', { method: 'POST' }),
-  runClean: (body: { categories: string[]; reclaimable_mb: number }) =>
+  runClean: (body: { categories: string[]; reclaimable_mb: number; device_id?: string }) =>
     req<any>('/device/clean', { method: 'POST', body: JSON.stringify(body) }),
   recommendations: (body: any) =>
     req<any[]>('/ai/recommendations', { method: 'POST', body: JSON.stringify(body) }),
+  history: (deviceId: string) => req<any[]>(`/history?device_id=${deviceId}`),
+  historySummary: (deviceId: string) => req<any>(`/history/summary?device_id=${deviceId}`),
+  referral: (deviceId: string) => req<any>(`/referral/${deviceId}`),
+  recordInvite: (deviceId: string) => req<any>(`/referral/${deviceId}/invite`, { method: 'POST' }),
+  getReminders: (deviceId: string) => req<any>(`/reminders/${deviceId}`),
+  updateReminders: (deviceId: string, prefs: any) =>
+    req<any>(`/reminders/${deviceId}`, { method: 'PUT', body: JSON.stringify({ device_id: deviceId, ...prefs }) }),
 };

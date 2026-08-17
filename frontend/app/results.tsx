@@ -8,6 +8,7 @@ import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { HealthRing } from '@/src/components/HealthRing';
 import { api } from '@/src/api';
+import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
 
 const CATS = [
@@ -43,7 +44,8 @@ export default function Results() {
     setCleaning(true);
     try {
       const cats = CATS.filter(c => selected[c.key]).map(c => c.label);
-      const res = await api.runClean({ categories: cats, reclaimable_mb: total });
+      const id = await getDeviceId();
+      const res = await api.runClean({ categories: cats, reclaimable_mb: total, device_id: id });
       setCleanedResult(res);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
