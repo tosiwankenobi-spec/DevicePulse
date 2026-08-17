@@ -9,7 +9,7 @@ This file is a memory aid for interacting with the user's RevenueCat account via
 - offering_lookup_key: default
 - Packages (package -> product_id, current price):
   - $rc_monthly -> prod0fdaac9c03  ($9.99 / P1M, trial: none)
-  - $rc_annual  -> prod86399064b4  ($79.99 / P1Y, trial: none)
+  - $rc_annual  -> prod86399064b4  ($79.99 / P1Y, trial: P1W / 7-day free trial)
 - Dashboard: https://app.revenuecat.com/projects/proj6d262295
 - App identifiers (app.json): ios.bundleIdentifier = android.package = com.emergent.verolanepulse.e73nen
 

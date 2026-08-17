@@ -27,6 +27,17 @@ export default function Paywall() {
 
   const pkg = packages[selected];
 
+  const trialLabel = (p: any): string | null => {
+    const intro = p?.product?.introPrice;
+    if (!intro) return null;
+    const isFree = intro.price === 0 || intro.priceString === '$0.00';
+    if (!isFree) return null;
+    const n = intro.periodNumberOfUnits ?? 7;
+    const unit = (intro.periodUnit ?? 'DAY').toString().toLowerCase().replace(/s$/, '');
+    return `${n}-${unit} free trial`;
+  };
+  const selectedTrial = trialLabel(pkg);
+
   const onBuy = async () => {
     if (!pkg || !identityReady) { setErrMsg('Sign in required before purchasing.'); return; }
     setConfirmOpen(false);
@@ -96,18 +107,26 @@ export default function Paywall() {
           ) : (
             <>
               <View style={styles.plans}>
-                {packages.map((p, i) => (
+                {packages.map((p, i) => {
+                  const t = trialLabel(p);
+                  return (
                   <Pressable
                     key={p.identifier}
                     style={[styles.plan, selected === i && styles.planActive]}
                     onPress={() => setSelected(i)}
                     testID={`plan-${p.packageType?.toLowerCase?.() || i}`}
                   >
+                    {!!t && (
+                      <View style={styles.trialTag}>
+                        <Text style={styles.trialTagText}>{t.toUpperCase()}</Text>
+                      </View>
+                    )}
                     <Text style={styles.planLabel}>{p.packageType === 'ANNUAL' ? 'Yearly' : p.packageType === 'MONTHLY' ? 'Monthly' : p.identifier}</Text>
                     <Text style={styles.planPrice}>{p.product.priceString}</Text>
                     <Text style={styles.planPer}>{p.product.title}</Text>
                   </Pressable>
-                ))}
+                  );
+                })}
               </View>
 
               {!!errMsg && <Text style={styles.errMsg} testID="paywall-error">{errMsg}</Text>}
@@ -119,7 +138,7 @@ export default function Paywall() {
                 testID="paywall-cta"
               >
                 <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
-                {isPurchasing ? <ActivityIndicator color={theme.color.onBrand} /> : <Text style={styles.ctaText}>Subscribe {pkg?.product.priceString}</Text>}
+                {isPurchasing ? <ActivityIndicator color={theme.color.onBrand} /> : <Text style={styles.ctaText}>{selectedTrial ? `Start ${selectedTrial}` : `Subscribe ${pkg?.product.priceString}`}</Text>}
               </Pressable>
 
               <Pressable style={styles.restoreBtn} onPress={onRestore} disabled={isRestoring} testID="paywall-restore">
@@ -135,7 +154,9 @@ export default function Paywall() {
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Confirm subscription</Text>
-            <Text style={styles.modalBody}>Subscribe to DevicePulse Pro for {pkg?.product.priceString}? (Simulated in preview.)</Text>
+            <Text style={styles.modalBody}>{selectedTrial
+              ? `Start your ${selectedTrial}, then ${pkg?.product.priceString}. Cancel anytime before it ends. (Simulated in preview.)`
+              : `Subscribe to DevicePulse Pro for ${pkg?.product.priceString}? (Simulated in preview.)`}</Text>
             <View style={styles.modalButtons}>
               <Pressable style={[styles.modalBtn, styles.modalGhost]} onPress={() => setConfirmOpen(false)} testID="confirm-cancel">
                 <Text style={styles.modalGhostText}>Cancel</Text>
@@ -181,6 +202,8 @@ const styles = StyleSheet.create({
   unavailable: { color: theme.color.onSurface2, fontSize: 14, textAlign: 'center', marginTop: theme.space.lg, paddingHorizontal: theme.space.xl, lineHeight: 20 },
   errMsg: { color: theme.color.error, fontSize: 13, textAlign: 'center', marginTop: 10, paddingHorizontal: theme.space.xl },
   restoreBtn: { alignItems: 'center', paddingVertical: 14 },
+  trialTag: { position: 'absolute', top: -10, alignSelf: 'center', backgroundColor: theme.color.brand, paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill },
+  trialTagText: { color: theme.color.onBrand, fontSize: 9, fontWeight: '800' },
   restoreText: { color: theme.color.brand, fontSize: 14, fontWeight: '700' },
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', alignItems: 'center', justifyContent: 'center', padding: theme.space.xl },
   modalCard: { backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.xl, borderWidth: 1, borderColor: theme.color.border, width: '100%' },
