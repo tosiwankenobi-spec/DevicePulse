@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Switch } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Switch, Modal, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { VLogo } from '@/src/components/VLogo';
 import { useAuth } from '@/src/AuthContext';
+import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 
 export default function Settings() {
@@ -14,8 +15,19 @@ export default function Settings() {
   const { user, logout } = useAuth();
   const [autoScan, setAutoScan] = React.useState(true);
   const [haptics, setHaptics] = React.useState(true);
+  const [deleteOpen, setDeleteOpen] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
 
   const onLogout = async () => {
+    await logout();
+    router.replace('/login');
+  };
+
+  const onDeleteAccount = async () => {
+    setDeleting(true);
+    try {
+      await api.deleteAccount();
+    } catch (e) { console.log(e); }
     await logout();
     router.replace('/login');
   };
@@ -115,6 +127,13 @@ export default function Settings() {
             <NavRow icon="shield-checkmark-outline" label="Terms of service" testID="settings-terms" />
           </View>
 
+          <Text style={styles.section}>Account</Text>
+          <View style={styles.card}>
+            <NavRow icon="phone-portrait-outline" label="Active devices" onPress={() => router.push('/sessions')} testID="settings-sessions" />
+            <Divider />
+            <NavRow icon="trash-outline" label="Delete account" onPress={() => setDeleteOpen(true)} testID="settings-delete-account" />
+          </View>
+
           <Pressable style={styles.logoutBtn} onPress={onLogout} testID="logout-button">
             <Ionicons name="log-out-outline" size={20} color={theme.color.error} />
             <Text style={styles.logoutText}>Sign out</Text>
@@ -127,6 +146,26 @@ export default function Settings() {
           </View>
         </ScrollView>
       </SafeAreaView>
+
+      <Modal visible={deleteOpen} transparent animationType="fade" onRequestClose={() => setDeleteOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalIcon}>
+              <Ionicons name="warning" size={30} color={theme.color.error} />
+            </View>
+            <Text style={styles.modalTitle}>Delete account?</Text>
+            <Text style={styles.modalBody}>This permanently erases your account and all data — history, streaks, referrals, reminders and family devices. This can&apos;t be undone.</Text>
+            <View style={styles.modalButtons}>
+              <Pressable style={[styles.modalBtn, styles.modalBtnGhost]} onPress={() => setDeleteOpen(false)} testID="delete-cancel">
+                <Text style={styles.modalBtnGhostText}>Cancel</Text>
+              </Pressable>
+              <Pressable style={[styles.modalBtn, styles.modalBtnDanger]} onPress={onDeleteAccount} disabled={deleting} testID="delete-confirm">
+                {deleting ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalBtnDangerText}>Delete</Text>}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -188,6 +227,17 @@ const styles = StyleSheet.create({
   profileEmail: { color: theme.color.onSurface2, fontSize: 13, marginTop: 2 },
   logoutBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 52, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.error + '55', backgroundColor: theme.color.surface2, marginTop: theme.space.lg },
   logoutText: { color: theme.color.error, fontSize: 15, fontWeight: '700' },
+  modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', alignItems: 'center', justifyContent: 'center', padding: theme.space.xl },
+  modalCard: { backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.xl, borderWidth: 1, borderColor: theme.color.border, alignItems: 'center', width: '100%' },
+  modalIcon: { width: 58, height: 58, borderRadius: 29, backgroundColor: theme.color.error + '22', alignItems: 'center', justifyContent: 'center', marginBottom: theme.space.md },
+  modalTitle: { color: theme.color.onSurface, fontSize: 20, fontWeight: '800' },
+  modalBody: { color: theme.color.onSurface2, fontSize: 14, textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  modalButtons: { flexDirection: 'row', gap: 10, marginTop: theme.space.lg, width: '100%' },
+  modalBtn: { flex: 1, height: 48, borderRadius: theme.radius.pill, alignItems: 'center', justifyContent: 'center' },
+  modalBtnGhost: { backgroundColor: theme.color.surface3, borderWidth: 1, borderColor: theme.color.border },
+  modalBtnGhostText: { color: theme.color.onSurface, fontWeight: '600' },
+  modalBtnDanger: { backgroundColor: theme.color.error },
+  modalBtnDangerText: { color: '#fff', fontWeight: '700' },
   footerBrand: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '600' },
   footerCorp: { color: theme.color.onSurface3, fontSize: 11 },
 });

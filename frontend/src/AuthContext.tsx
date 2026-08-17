@@ -12,11 +12,13 @@ type User = { user_id: string; email: string; name: string; picture?: string } |
 interface AuthCtx {
   user: User;
   loading: boolean;
+  justLoggedIn: boolean;
+  clearJustLoggedIn: () => void;
   login: () => Promise<void>;
   logout: () => Promise<void>;
 }
 
-const Ctx = createContext<AuthCtx>({ user: null, loading: true, login: async () => {}, logout: async () => {} });
+const Ctx = createContext<AuthCtx>({ user: null, loading: true, justLoggedIn: false, clearJustLoggedIn: () => {}, login: async () => {}, logout: async () => {} });
 export const useAuth = () => useContext(Ctx);
 
 function extractSessionId(url?: string | null): string | null {
@@ -28,6 +30,7 @@ function extractSessionId(url?: string | null): string | null {
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User>(null);
   const [loading, setLoading] = useState(true);
+  const [justLoggedIn, setJustLoggedIn] = useState(false);
   const processed = useRef<Set<string>>(new Set());
 
   const exchange = useCallback(async (sessionId: string) => {
@@ -37,6 +40,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const res = await api.createSession(sessionId);
       await saveToken(res.session_token);
       setUser(res.user);
+      setJustLoggedIn(true);
     } catch (e) {
       console.log('session exchange failed', e);
     }
@@ -128,5 +132,5 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (sid) await exchange(sid);
   }, [exchange]);
 
-  return <Ctx.Provider value={{ user, loading, login, logout }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, loading, justLoggedIn, clearJustLoggedIn: () => setJustLoggedIn(false), login, logout }}>{children}</Ctx.Provider>;
 };

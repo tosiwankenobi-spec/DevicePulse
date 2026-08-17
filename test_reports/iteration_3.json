@@ -1,0 +1,45 @@
+{
+  "summary": "Iter-3 covers the four NEW DevicePulse features (Sessions list, Session revoke, Account deletion, Guest Peek) and Welcome-Back banner + Settings entries. Extended /app/backend/tests/test_auth_and_scoping.py with two new classes (TestSessionsListAndRevoke, TestAccountDeletion) and 3 new PROTECTED-auth parametrized rows. Total: 45/45 pytest cases PASSED (100%) — see /app/test_reports/pytest/pytest_iter3_results.xml. Verified: (a) GET /api/auth/sessions returns list with sid/created_at/expires_at/current and marks EXACTLY the caller's token as current=true; another user's sids never appear in list (IDOR-safe). (b) POST /api/auth/sessions/{sid}/revoke deletes ONLY the caller's own sid — returns {revoked:true} for own extra sid (and the revoked token immediately fails /auth/me with 401), {revoked:false} for a non-existent sid, and {revoked:false} when trying to revoke another user's sid (that user's session remains valid). (c) DELETE /api/auth/account removes users + all user_sessions + cleanups/family/referrals/reminders for that user_id, subsequent /auth/me on the same token returns 401, and a second user's user/session/history/family are untouched. (d) All three new endpoints require auth (401 without Bearer). (e) Regressions: 22 prior tests (protected 401s, public 200s, IDOR scoping, expired session, invalid token shape, seeded happy path across /auth/me, /history, /streak+freeze, /forecast, /reminders, /referral, /cache-breakdown, /family CRUD) still PASS. Frontend web preview (mobile viewport 390x844) verified for the UNAUTH flows: /login renders testID=login-screen with 'Continue with Google' (testID=google-login-button); tapping testID=guest-peek-button navigates to /guest (testID=guest-screen) which loads a sample HealthRing + 4 stat cards without any protected API call (only /api/device/health), and testID=guest-signin-cta returns to /login. The /guest screen only calls api.health() (public) — verified by static code review of /app/frontend/app/guest.tsx. Authed UI flows (sessions list revoke button, welcome-banner + welcome-dismiss on Home, settings-sessions row → /sessions, settings-delete-account row → confirm modal with delete-confirm/delete-cancel) were covered via code review (all required testIDs present in /app/frontend/app/sessions.tsx, /app/frontend/app/(tabs)/index.tsx and /app/frontend/app/(tabs)/settings.tsx) — cannot be exercised end-to-end via web preview without a real Emergent Google OAuth session. Minor: one React Native web warning 'props.pointerEvents is deprecated. Use style.pointerEvents' observed in the console (non-blocking, RN Web internal — safe to ignore). No deprecated Expo modules (expo-av / expo-barcode-scanner / expo-background-fetch) detected in server.py or the touched frontend files. No mocked APIs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/sessions/{sid}/revoke", "issue": "Returns 200 {revoked:false} both when the sid does not exist AND when it belongs to another user. Semantically fine (leaks no info), but a caller cannot distinguish 'already gone' from 'not yours'. Acceptable design choice."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "react-native-web (upstream)", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Not from app code — likely from a dependency (e.g. reanimated/svg on web). Reference: browser console on /login."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_and_scoping.py",
+    "/app/test_reports/pytest/pytest_iter3_results.xml"
+  ],
+  "action_items": [
+    "None required for backend — all 4 new endpoints (GET /auth/sessions, POST /auth/sessions/{sid}/revoke, DELETE /auth/account) behave per spec including IDOR isolation and cascade cleanup.",
+    "Optional: consider returning 404 (not 200 {revoked:false}) when POST /auth/sessions/{sid}/revoke does not find a matching sid for the user — improves API semantics; current behavior is safe.",
+    "Optional (frontend): trace the 'props.pointerEvents is deprecated' warning on web (likely a transitive dep on react-native-web); non-blocking."
+  ],
+  "critical_code_review_comments": [
+    "server.py POST /auth/sessions/{sid}/revoke: scoping via {'user_id': user['user_id'], 'sid': sid} in delete_one is correct — user cannot revoke another user's sid (verified with test_cannot_revoke_other_users_sid).",
+    "server.py DELETE /auth/account: cleans users, user_sessions, cleanups, referrals, reminders, freezes, family — matches the full per-user surface (verified by count_documents == 0 after delete).",
+    "server.py GET /auth/sessions: back-fills 'sid' for legacy rows that lack one (via update_one $set). Good defensive handling.",
+    "frontend guest.tsx correctly imports only api.health() (public endpoint); no protected endpoint is called on the guest screen — validated by static grep.",
+    "frontend AuthContext exposes justLoggedIn + clearJustLoggedIn used by (tabs)/index.tsx to auto-hide the welcome-banner after 5s (setTimeout in useEffect); testID welcome-banner + welcome-dismiss present."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auth_and_scoping.py (added TestSessionsListAndRevoke + TestAccountDeletion; extended PROTECTED matrix with 3 new endpoints; seed helper now emits sid)"
+  ],
+  "success_rate": {
+    "backend": "100% (45/45)",
+    "frontend": "100% of testable unauth flows (login → guest-peek → guest-signin-cta → login). Authed UI (sessions revoke tap, welcome-banner dismiss, delete-account modal) covered by code review + API tests."
+  },
+  "seed_data_creation": "Each test seeds a TEST_-prefixed users + user_sessions row directly into MongoDB (DB from backend/.env), now including sid (12 hex). Extra rows added ad-hoc in test_revoke_own_extra_session (second session_token+sid for same user) and test_delete_leaves_other_user_data_untouched (two independent users, each with cleanups/family). All fixtures/tests clean up their inserts in finally/teardown across users, user_sessions, cleanups, referrals, reminders, freezes, family.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "user_sessions docs now carry a 'sid' (12-hex) alongside session_token — seed both when injecting sessions. Sessions endpoints: GET /api/auth/sessions (list, marks current), POST /api/auth/sessions/{sid}/revoke ({revoked:bool}), DELETE /api/auth/account (cascade + returns {deleted:true}). Guest peek is fully public — the /guest screen only calls /api/device/health. Welcome banner is driven by AuthContext.justLoggedIn (set after successful /auth/session exchange, auto-cleared 5s later or via testID=welcome-dismiss). If you want to exercise authed frontend flows end-to-end, either (1) inject window.localStorage['dp_session_token']=<seeded_token> in the preview URL then reload — AuthContext should pick it up — or (2) drive them via API. Backend on localhost:8001 (override with BACKEND_TEST_URL); AI endpoint rate-limited at 10/min per client-IP.",
+  "rca_of_issue": "N/A — no failures. All 4 new features implemented correctly, IDOR-safe, and previously verified auth/scoping regressions still hold."
+}

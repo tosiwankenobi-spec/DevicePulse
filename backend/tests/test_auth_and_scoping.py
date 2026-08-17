@@ -32,10 +32,11 @@ _db = _mongo[DB_NAME]
 
 
 # ---------------- Helpers ----------------
-def _seed_user_and_session(prefix="TEST_"):
+def _seed_user_and_session(prefix="TEST_", sid=None):
     user_id = f"{prefix}user_{uuid.uuid4().hex[:12]}"
     email = f"{prefix}{uuid.uuid4().hex[:6]}@example.com"
     token = f"{prefix}tok_{uuid.uuid4().hex}"
+    sid = sid or uuid.uuid4().hex[:12]
     _db.users.insert_one({
         "user_id": user_id,
         "email": email,
@@ -45,11 +46,12 @@ def _seed_user_and_session(prefix="TEST_"):
     })
     _db.user_sessions.insert_one({
         "session_token": token,
+        "sid": sid,
         "user_id": user_id,
         "created_at": datetime.now(timezone.utc),
         "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
     })
-    return user_id, email, token
+    return user_id, email, token, sid
 
 
 def _cleanup_user(user_id, token):
@@ -71,8 +73,8 @@ def client():
 
 @pytest.fixture()
 def seeded_user():
-    uid, email, tok = _seed_user_and_session()
-    yield {"user_id": uid, "email": email, "token": tok}
+    uid, email, tok, sid = _seed_user_and_session()
+    yield {"user_id": uid, "email": email, "token": tok, "sid": sid}
     _cleanup_user(uid, tok)
 
 
@@ -94,6 +96,10 @@ PROTECTED = [
     ("DELETE", "/family/member/does-not-exist", None),
     ("POST", "/device/clean", {"categories": ["junk"], "reclaimable_mb": 100.0}),
     ("GET", "/device/cache-breakdown", None),
+    # New in this iteration:
+    ("GET", "/auth/sessions", None),
+    ("POST", "/auth/sessions/does-not-exist/revoke", {}),
+    ("DELETE", "/auth/account", None),
 ]
 
 PUBLIC = [
@@ -219,8 +225,8 @@ class TestSeededSessionFlow:
 # ==================== IDOR fix: two users must be isolated ====================
 class TestIDORScoping:
     def test_two_users_isolated_family_and_history(self, client):
-        u1_id, _, u1_tok = _seed_user_and_session(prefix="TEST_A_")
-        u2_id, _, u2_tok = _seed_user_and_session(prefix="TEST_B_")
+        u1_id, _, u1_tok, _ = _seed_user_and_session(prefix="TEST_A_")
+        u2_id, _, u2_tok, _ = _seed_user_and_session(prefix="TEST_B_")
         try:
             h1 = {"Authorization": f"Bearer {u1_tok}"}
             h2 = {"Authorization": f"Bearer {u2_tok}"}
@@ -290,3 +296,135 @@ class TestInvalidTokenShape:
     def test_unknown_bearer_token_returns_401(self, client):
         r = client.get(f"{API}/auth/me", headers={"Authorization": "Bearer unknown-token-abc"})
         assert r.status_code == 401
+
+
+# ==================== Sessions list, revoke, and account deletion (NEW) ====================
+class TestSessionsListAndRevoke:
+    def test_sessions_list_marks_current(self, client, seeded_user):
+        h = {"Authorization": f"Bearer {seeded_user['token']}"}
+        r = client.get(f"{API}/auth/sessions", headers=h)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert isinstance(data, list) and len(data) >= 1
+        # Every entry has expected shape
+        for s in data:
+            assert set(["sid", "created_at", "expires_at", "current"]).issubset(s.keys())
+        # exactly one is current (the calling token)
+        currents = [s for s in data if s["current"]]
+        assert len(currents) == 1
+        assert currents[0]["sid"] == seeded_user["sid"]
+
+    def test_sessions_list_only_own_user(self, client):
+        u1_id, _, u1_tok, u1_sid = _seed_user_and_session(prefix="TEST_LA_")
+        u2_id, _, u2_tok, u2_sid = _seed_user_and_session(prefix="TEST_LB_")
+        try:
+            r = client.get(f"{API}/auth/sessions", headers={"Authorization": f"Bearer {u1_tok}"})
+            assert r.status_code == 200
+            sids = [s["sid"] for s in r.json()]
+            assert u1_sid in sids
+            assert u2_sid not in sids, "IDOR: user A sees user B\u2019s session sid"
+        finally:
+            _cleanup_user(u1_id, u1_tok); _cleanup_user(u2_id, u2_tok)
+
+    def test_revoke_own_extra_session(self, client, seeded_user):
+        # Add a second session for the same user
+        extra_sid = uuid.uuid4().hex[:12]
+        extra_tok = f"TEST_extra_{uuid.uuid4().hex}"
+        _db.user_sessions.insert_one({
+            "session_token": extra_tok, "sid": extra_sid,
+            "user_id": seeded_user["user_id"],
+            "created_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
+        })
+        try:
+            h = {"Authorization": f"Bearer {seeded_user['token']}"}
+            r = client.post(f"{API}/auth/sessions/{extra_sid}/revoke", headers=h)
+            assert r.status_code == 200 and r.json() == {"revoked": True}
+            # confirm the extra token no longer authenticates
+            r2 = client.get(f"{API}/auth/me", headers={"Authorization": f"Bearer {extra_tok}"})
+            assert r2.status_code == 401
+            # calling session still works
+            r3 = client.get(f"{API}/auth/me", headers=h)
+            assert r3.status_code == 200
+        finally:
+            _db.user_sessions.delete_many({"session_token": extra_tok})
+
+    def test_revoke_nonexistent_sid_returns_revoked_false(self, client, seeded_user):
+        h = {"Authorization": f"Bearer {seeded_user['token']}"}
+        r = client.post(f"{API}/auth/sessions/nonexistent0/revoke", headers=h)
+        assert r.status_code == 200 and r.json() == {"revoked": False}
+
+    def test_cannot_revoke_other_users_sid(self, client):
+        u1_id, _, u1_tok, u1_sid = _seed_user_and_session(prefix="TEST_R1_")
+        u2_id, _, u2_tok, u2_sid = _seed_user_and_session(prefix="TEST_R2_")
+        try:
+            # user 2 tries to revoke user 1\u2019s sid
+            r = client.post(f"{API}/auth/sessions/{u1_sid}/revoke",
+                            headers={"Authorization": f"Bearer {u2_tok}"})
+            assert r.status_code == 200 and r.json() == {"revoked": False}, \
+                "IDOR: user B was able to revoke user A\u2019s session"
+            # user 1\u2019s session is still valid
+            r2 = client.get(f"{API}/auth/me", headers={"Authorization": f"Bearer {u1_tok}"})
+            assert r2.status_code == 200
+        finally:
+            _cleanup_user(u1_id, u1_tok); _cleanup_user(u2_id, u2_tok)
+
+
+class TestAccountDeletion:
+    def test_delete_removes_user_sessions_and_data(self, client):
+        uid, _, tok, _ = _seed_user_and_session(prefix="TEST_DEL_")
+        try:
+            h = {"Authorization": f"Bearer {tok}"}
+            # seed some data
+            r = client.post(f"{API}/device/clean", headers=h,
+                            json={"categories": ["junk"], "reclaimable_mb": 42.0})
+            assert r.status_code == 200
+            r = client.post(f"{API}/family/member", headers=h,
+                            json={"name": "ToBeDeleted", "device_type": "phone"})
+            assert r.status_code == 200
+            r = client.get(f"{API}/referral", headers=h); assert r.status_code == 200
+            r = client.get(f"{API}/reminders", headers=h); assert r.status_code == 200
+
+            # delete the account
+            r = client.delete(f"{API}/auth/account", headers=h)
+            assert r.status_code == 200 and r.json() == {"deleted": True}
+
+            # token no longer authenticates
+            r2 = client.get(f"{API}/auth/me", headers=h)
+            assert r2.status_code == 401
+
+            # DB rows for this user are gone
+            assert _db.users.find_one({"user_id": uid}) is None
+            assert _db.user_sessions.count_documents({"user_id": uid}) == 0
+            assert _db.cleanups.count_documents({"device_id": uid}) == 0
+            assert _db.family.count_documents({"owner_id": uid}) == 0
+            assert _db.referrals.count_documents({"device_id": uid}) == 0
+            assert _db.reminders.count_documents({"device_id": uid}) == 0
+        finally:
+            _cleanup_user(uid, tok)
+
+    def test_delete_leaves_other_user_data_untouched(self, client):
+        a_id, _, a_tok, _ = _seed_user_and_session(prefix="TEST_KA_")
+        b_id, _, b_tok, _ = _seed_user_and_session(prefix="TEST_KB_")
+        try:
+            ha = {"Authorization": f"Bearer {a_tok}"}
+            hb = {"Authorization": f"Bearer {b_tok}"}
+            client.post(f"{API}/device/clean", headers=ha,
+                       json={"categories": ["junk"], "reclaimable_mb": 10.0})
+            client.post(f"{API}/device/clean", headers=hb,
+                       json={"categories": ["junk"], "reclaimable_mb": 20.0})
+            client.post(f"{API}/family/member", headers=hb, json={"name": "KeepMe", "device_type": "phone"})
+
+            # delete user A
+            r = client.delete(f"{API}/auth/account", headers=ha)
+            assert r.status_code == 200
+
+            # user B still fine
+            r2 = client.get(f"{API}/auth/me", headers=hb)
+            assert r2.status_code == 200 and r2.json()["user_id"] == b_id
+            r3 = client.get(f"{API}/history", headers=hb)
+            assert r3.status_code == 200 and any(x["reclaimed_mb"] == 20.0 for x in r3.json())
+            r4 = client.get(f"{API}/family", headers=hb)
+            assert r4.status_code == 200 and any(m["name"] == "KeepMe" for m in r4.json())
+        finally:
+            _cleanup_user(a_id, a_tok); _cleanup_user(b_id, b_tok)

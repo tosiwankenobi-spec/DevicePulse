@@ -29,6 +29,9 @@ export const api = {
     req<any>('/auth/session', { method: 'POST', body: JSON.stringify({ session_id: sessionId }) }),
   me: () => req<any>('/auth/me'),
   logout: () => req<any>('/auth/logout', { method: 'POST' }),
+  sessions: () => req<any[]>('/auth/sessions'),
+  revokeSession: (sid: string) => req<any>(`/auth/sessions/${sid}/revoke`, { method: 'POST' }),
+  deleteAccount: () => req<any>('/auth/account', { method: 'DELETE' }),
 
   // Device (simulated)
   health: () => req<any>('/device/health'),

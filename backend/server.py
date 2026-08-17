@@ -252,6 +252,7 @@ async def create_session(body: SessionRequest):
 
     await db.user_sessions.insert_one({
         "session_token": session_token,
+        "sid": uuid.uuid4().hex[:12],
         "user_id": user_id,
         "created_at": datetime.now(timezone.utc),
         "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
@@ -272,6 +273,44 @@ async def auth_logout(authorization: Optional[str] = Header(default=None)):
         token = authorization.split(" ", 1)[1].strip()
         await db.user_sessions.delete_one({"session_token": token})
     return {"ok": True}
+
+@api_router.get("/auth/sessions")
+async def list_sessions(user=Depends(get_current_user), authorization: Optional[str] = Header(default=None)):
+    cur_token = authorization.split(" ", 1)[1].strip() if authorization and authorization.startswith("Bearer ") else ""
+    docs = await db.user_sessions.find({"user_id": user["user_id"]}).sort("created_at", -1).to_list(50)
+    out = []
+    for d in docs:
+        sid = d.get("sid")
+        if not sid:
+            sid = uuid.uuid4().hex[:12]
+            await db.user_sessions.update_one({"session_token": d["session_token"]}, {"$set": {"sid": sid}})
+        created = d.get("created_at")
+        expires = d.get("expires_at")
+        out.append({
+            "sid": sid,
+            "created_at": created.isoformat() if isinstance(created, datetime) else str(created),
+            "expires_at": expires.isoformat() if isinstance(expires, datetime) else str(expires),
+            "current": d.get("session_token") == cur_token,
+        })
+    return out
+
+@api_router.post("/auth/sessions/{sid}/revoke")
+async def revoke_session(sid: str, user=Depends(get_current_user)):
+    res = await db.user_sessions.delete_one({"user_id": user["user_id"], "sid": sid})
+    return {"revoked": res.deleted_count > 0}
+
+@api_router.delete("/auth/account")
+async def delete_account(user=Depends(get_current_user)):
+    uid = user["user_id"]
+    # Remove all data owned by this user
+    await db.cleanups.delete_many({"device_id": uid})
+    await db.referrals.delete_many({"device_id": uid})
+    await db.reminders.delete_many({"device_id": uid})
+    await db.freezes.delete_many({"device_id": uid})
+    await db.family.delete_many({"owner_id": uid})
+    await db.user_sessions.delete_many({"user_id": uid})
+    await db.users.delete_one({"user_id": uid})
+    return {"deleted": True}
 
 
 @api_router.get("/device/health", response_model=DeviceHealth)

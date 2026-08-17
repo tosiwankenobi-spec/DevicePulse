@@ -5,11 +5,13 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { HealthRing } from '@/src/components/HealthRing';
 import { GlassCard } from '@/src/components/GlassCard';
 import { VLogo } from '@/src/components/VLogo';
 import { api } from '@/src/api';
 import { getDeviceId } from '@/src/device';
+import { useAuth } from '@/src/AuthContext';
 import { theme } from '@/src/theme';
 
 type Health = {
@@ -28,6 +30,7 @@ type Rec = { title: string; description: string; impact: string };
 
 export default function Home() {
   const router = useRouter();
+  const { user, justLoggedIn, clearJustLoggedIn } = useAuth();
   const [health, setHealth] = useState<Health | null>(null);
   const [recs, setRecs] = useState<Rec[] | null>(null);
   const [loadingRecs, setLoadingRecs] = useState(false);
@@ -66,6 +69,12 @@ export default function Home() {
   };
 
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (justLoggedIn) {
+      const t = setTimeout(() => clearJustLoggedIn(), 5000);
+      return () => clearTimeout(t);
+    }
+  }, [justLoggedIn]);
   useFocusEffect(React.useCallback(() => {
     getDeviceId().then((id) => Promise.all([api.streak(), api.forecast()]).then(([s, f]) => {
       setStreak(s.current_streak_weeks);
@@ -127,6 +136,24 @@ export default function Home() {
               </LinearGradient>
             </Pressable>
           </View>
+
+          {/* Welcome back banner */}
+          {justLoggedIn && user && (
+            <Animated.View entering={FadeInDown} style={styles.welcomeBanner} testID="welcome-banner">
+              <View style={styles.welcomeIcon}>
+                <Ionicons name="hand-right" size={18} color={theme.color.brand} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.welcomeTitle}>Welcome back, {user.name?.split(' ')[0] || 'there'}!</Text>
+                <Text style={styles.welcomeBody}>
+                  {streak != null && streak > 0 ? `🔥 You're on a ${streak}-week streak — keep it going.` : 'Run a Smart Scan to start your streak.'}
+                </Text>
+              </View>
+              <Pressable onPress={clearJustLoggedIn} hitSlop={8} testID="welcome-dismiss">
+                <Ionicons name="close" size={18} color={theme.color.onSurface3} />
+              </Pressable>
+            </Animated.View>
+          )}
 
           {/* Hero Ring */}
           <GlassCard style={styles.hero} testID="home-hero-card">
@@ -269,4 +296,8 @@ const styles = StyleSheet.create({
   quickIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   quickLabel: { color: theme.color.onSurface2, fontSize: 13, flex: 1 },
   quickValue: { color: theme.color.onSurface, fontSize: 18, fontWeight: '800' },
+  welcomeBanner: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: theme.space.lg, marginBottom: theme.space.sm, padding: theme.space.md, backgroundColor: theme.color.brand3, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.brand + '55' },
+  welcomeIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(16,185,129,0.18)', alignItems: 'center', justifyContent: 'center' },
+  welcomeTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
+  welcomeBody: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
 });
