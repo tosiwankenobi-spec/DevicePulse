@@ -9,11 +9,21 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { AuthProvider } from "@/src/AuthContext";
+import { initializeRevenueCat, SubscriptionProvider } from "@/src/lib/revenuecat";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 
 LogBox.ignoreAllLogs(true)
 
 SplashScreen.preventAutoHideAsync();
+
+const queryClient = new QueryClient();
+
+try {
+  initializeRevenueCat();
+} catch (err) {
+  console.warn("RevenueCat unavailable:", err);
+}
 
 // 1. Foreground handler — MODULE SCOPE (guard web)
 if (Platform.OS !== "web") {
@@ -94,7 +104,11 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#050F14' }}>
       <StatusBar barStyle="light-content" backgroundColor="#050F14" />
       <AuthProvider>
-        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#050F14' }, animation: 'fade' }} />
+        <QueryClientProvider client={queryClient}>
+          <SubscriptionProvider>
+            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#050F14' }, animation: 'fade' }} />
+          </SubscriptionProvider>
+        </QueryClientProvider>
       </AuthProvider>
 
       <Modal visible={nudgeOpen} transparent animationType="fade" onRequestClose={() => closeNudge(false)}>

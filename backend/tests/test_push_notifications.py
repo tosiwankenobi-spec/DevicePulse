@@ -85,16 +85,26 @@ def seeded_user():
 
 # ==================== /api/register-push ====================
 class TestRegisterPush:
-    def test_register_push_endpoint_reachable_and_graceful(self, client):
-        """With placeholder key upstream returns 401 → backend maps to 500
-        'EMERGENT_PUSH_KEY missing or invalid'. Must NOT crash the server."""
+    def test_register_push_requires_bearer(self, client):
+        """Now auth-protected: no token → 401 (identity derived from token, not body)."""
         body = {
             "user_id": f"TEST_dev_{uuid.uuid4().hex[:8]}",
             "platform": "android",
             "device_token": f"ExponentPushToken[{uuid.uuid4().hex}]",
         }
         r = client.post(f"{API}/register-push", json=body)
-        # Placeholder → upstream 401 → controlled 500 (NOT 200, NOT 500 unhandled)
+        assert r.status_code == 401, f"expected 401 without token, got {r.status_code}: {r.text[:300]}"
+
+    def test_register_push_graceful_with_bearer(self, client, seeded_user):
+        """With a valid token but placeholder push key, upstream 401 → controlled 500
+        'EMERGENT_PUSH_KEY missing or invalid'. Must NOT crash the server."""
+        h = {"Authorization": f"Bearer {seeded_user['token']}"}
+        body = {
+            "user_id": "ignored-server-uses-token",
+            "platform": "android",
+            "device_token": f"ExponentPushToken[{uuid.uuid4().hex}]",
+        }
+        r = client.post(f"{API}/register-push", headers=h, json=body)
         assert r.status_code == 500, f"expected 500 with placeholder key, got {r.status_code}: {r.text[:300]}"
         assert "EMERGENT_PUSH_KEY" in r.text, r.text[:300]
 
@@ -104,9 +114,10 @@ class TestRegisterPush:
         assert r.status_code == 200
         assert r.json().get("app") == "DevicePulse"
 
-    def test_register_push_validates_body(self, client):
-        """Missing required fields → 422 (pydantic), not 500."""
-        r = client.post(f"{API}/register-push", json={"user_id": "x"})
+    def test_register_push_validates_body(self, client, seeded_user):
+        """Missing required fields → 422 (pydantic), not 500 (with valid auth)."""
+        h = {"Authorization": f"Bearer {seeded_user['token']}"}
+        r = client.post(f"{API}/register-push", headers=h, json={"platform": "ios"})
         assert r.status_code == 422
 
 

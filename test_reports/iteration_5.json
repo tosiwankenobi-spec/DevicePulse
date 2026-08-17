@@ -1,0 +1,47 @@
+{
+  "summary": "Iter-5 covers the NEW RevenueCat (Emergent-managed) in-app subscription paywall on the Expo web preview. All 6 review requirements PASS. (1) Paywall (`/paywall`) renders REAL packages from RevenueCat offerings — NOT hardcoded: plan-monthly '$9.99 / Pro monthly', plan-annual '$79.99 / Pro annual'; CTA text reflects selected plan ('Subscribe $9.99' → 'Subscribe $79.99' after tapping plan-annual). (2) Identity gate is enforced in code AND at runtime: on an unauthenticated web session originalAppUserId starts with '$RCAnonymousID:' (confirmed via the RC SDK 'sdk_initialized' event body in console), useSubscription().identityReady is false, and the CTA is disabled → computed style pointerEvents:'none', opacity:'0.5', aria-disabled:'true'; tapping paywall-cta does NOT open the confirm-subscribe modal (confirm-subscribe never mounts). Wiring in src/AuthContext.tsx (L83-99) correctly calls Purchases.logIn(user.user_id) on auth and Purchases.logOut() on sign-out via rcIdentityRef guard, and revenuecat.tsx (L58-60) hard-fails the purchase mutation with 'identity_not_ready' if a signed-in user hasn't propagated. (3) Purchase flow gates: tapping Subscribe (when identity ready) opens the confirm modal (verified via code — setConfirmOpen(true) on onPress in paywall.tsx L117); confirming calls purchase(pkg) and userCancelled is swallowed silently (paywall.tsx L37). (4) Restore button (paywall-restore) fires restore() without crashing — paywall-screen still mounted after tap; no error surface. (5) Empty-offerings path shows paywall-unavailable and no dead buy button (code path paywall.tsx L94-96). (6) Regression: app boots on web with RevenueCat 'Purchases SDK with RC Test store API Key' initialized in Browser Mode (no crash, no red screen); onboarding-screen renders; /login screen renders; no backend subscription endpoints exist (grep of server.py for 'subscription|is_pro|entitlement' → 0 matches, as intended). Backend regression: 57/59 pytest cases pass; the 2 failures are in TestRegisterPush and are TEST-ONLY DRIFT — main agent hardened POST /api/register-push to require Bearer + derive user_id from the token (server.py L344-354; addressing iter-4 minor #1), so the old tests that called it publicly now correctly get 401 (this is the correct new behavior — the tests need updating, no product regression). Google-OAuth authed flows (post-login paywall, live purchase completing on the Test Store) can't be automated because Emergent Google auth requires a real Google account; verified via strict code review + anonymous paywall runtime that (a) the buy path is blocked until identityReady, and (b) a successful purchase branch renders paywall-active. AI endpoint not exercised this run (respecting 10/min limit).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "N/A", "issue": "No new subscription endpoints — client-side entitlement gating via customerInfo.entitlements.active['pro'] is by design per problem statement. Confirmed no is_pro/subscription route exists."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/pytest/pytest_iter5_regression.xml",
+    "/app/backend/tests/test_auth_and_scoping.py",
+    "/app/backend/tests/test_push_notifications.py"
+  ],
+  "action_items": [
+    "TEST-ONLY (not a product bug): update /app/backend/tests/test_push_notifications.py::TestRegisterPush to send an Authorization: Bearer header (seed a TEST_ session) — the endpoint was correctly hardened in iter-4 follow-up to require auth (server.py L344-354).",
+    "OPTIONAL: consider capturing customerInfo.originalAppUserId in the paywall UI (dev-only badge) so QA can visually confirm identity binding post-login without opening devtools — non-blocking."
+  ],
+  "critical_code_review_comments": [
+    "revenuecat.tsx (L15-23) — getRevenueCatApiKey correctly returns the test key on web/__DEV__ and platform keys otherwise; throws early if any of the 3 env vars are missing. Good fail-fast.",
+    "revenuecat.tsx (L48-54) — addCustomerInfoUpdateListener + queryClient.setQueryData keeps isSubscribed reactive without polling; cleanup via removeCustomerInfoUpdateListener on unmount is correct.",
+    "revenuecat.tsx (L56-63) — purchaseMutation reads originalAppUserId BEFORE purchase and throws 'identity_not_ready' if $RCAnonymousID: — double-defence in addition to the disabled CTA. Excellent.",
+    "revenuecat.tsx (L69-73) — isSubscribed derived from entitlements.active['pro']; identityReady derived from a NON-anon originalAppUserId. Client-only source of truth as designed.",
+    "AuthContext.tsx (L83-99) — RC identity bind uses rcIdentityRef guard so Purchases.logIn is only called on user change (no repeated logins); Purchases.logOut on sign-out; wrapped in try/catch that only logs — never blocks auth UX. Correct.",
+    "_layout.tsx (L22-26) — initializeRevenueCat() runs at module scope wrapped in try/catch so an SDK init failure never crashes the tree. SubscriptionProvider is placed inside QueryClientProvider which is inside AuthProvider — correct order for the useEffect in AuthContext to see rcEnabled.",
+    "paywall.tsx (L28-40) — onBuy hard-checks !pkg && !identityReady before purchase, closes confirm modal before await, swallows userCancelled, surfaces a generic error otherwise. Solid contract.",
+    "paywall.tsx (L86-96) — priority order (isSubscribed → isLoading → empty packages → plans) is correct; empty offerings renders paywall-unavailable INSTEAD of a dead CTA (matches spec).",
+    "paywall.tsx (L104) — plan testID uses packageType?.toLowerCase() with a fallback to index; on Test Store this resolves to 'plan-monthly' and 'plan-annual' (verified via querySelector). If a custom package identifier lacks a standard packageType, fallback to 'plan-0'/'plan-1' still works.",
+    "server.py — grep confirmed NO subscription/is_pro/entitlement endpoints exist (as required by design).",
+    "server.py L344-354 — /register-push now requires get_current_user and IGNORES client-supplied user_id (uses token identity). This is the correct hardening from iter-4 minor #1."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "97% (57/59; 2 failures are test-drift after intentional auth hardening on /register-push)",
+    "frontend": "100% on paywall behaviors reachable without Google OAuth (paywall render, real prices, plan switch, identity gate, restore, close, unavailable path via code, boot regression)"
+  },
+  "seed_data_creation": "No new seed data. Backend tests reused existing TEST_-prefixed users/sessions fixtures.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "RevenueCat runs in BROWSER MODE on web preview against the Test Store using EXPO_PUBLIC_REVENUECAT_TEST_API_KEY. Anonymous originalAppUserId is $RCAnonymousID:<hash> — purchase is blocked by BOTH the disabled CTA (identityReady=false) AND the purchaseMutation pre-check. To exercise a full purchase→paywall-active on web you need a real Google login (Emergent OAuth cannot be automated); alternatively seed a Bearer token per /app/memory/test_credentials.md and inject it, then reload /paywall — the RC SDK will call Purchases.logIn(user_id) via AuthContext, identityReady flips true, confirm-subscribe modal opens, and the Test Store completes the simulated purchase (activates entitlement 'pro' → paywall-active mounts). Do NOT add any backend is_pro/subscription endpoints — client-side entitlement is by design. AI endpoint remains rate-limited at 10/min per client IP. Two /register-push tests fail after auth hardening — update the test file to send a Bearer header (product code is correct).",
+  "rca_of_issue": "N/A — the two backend test failures are TEST DRIFT after the /register-push endpoint was correctly hardened to require auth (addressing iter-4's own minor recommendation). No product regression. All RevenueCat paywall requirements pass."
+}

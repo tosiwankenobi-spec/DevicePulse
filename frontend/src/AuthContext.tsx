@@ -5,6 +5,7 @@ import * as Linking from 'expo-linking';
 import { api, setUnauthorizedHandler } from './api';
 import { saveToken, getToken, clearToken } from './authStorage';
 import { registerForPush } from './push';
+import { rcEnabled } from './lib/revenuecat';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -33,6 +34,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const [justLoggedIn, setJustLoggedIn] = useState(false);
   const processed = useRef<Set<string>>(new Set());
+  const rcIdentityRef = useRef<string | null>(null);
 
   const exchange = useCallback(async (sessionId: string) => {
     if (processed.current.has(sessionId)) return;
@@ -75,6 +77,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Register this device for push whenever a user is signed in (native only)
   useEffect(() => {
     if (user?.user_id) registerForPush(user.user_id);
+  }, [user?.user_id]);
+
+  // Bind RevenueCat identity to the authenticated user (COMPULSORY on every auth path)
+  useEffect(() => {
+    if (!rcEnabled) return;
+    (async () => {
+      try {
+        const Purchases = require('react-native-purchases').default;
+        if (user?.user_id && rcIdentityRef.current !== user.user_id) {
+          await Purchases.logIn(user.user_id);
+          rcIdentityRef.current = user.user_id;
+        } else if (!user?.user_id && rcIdentityRef.current) {
+          await Purchases.logOut();
+          rcIdentityRef.current = null;
+        }
+      } catch (e) {
+        console.log('RevenueCat identity error', e);
+      }
+    })();
   }, [user?.user_id]);
 
   // Initial bootstrap
