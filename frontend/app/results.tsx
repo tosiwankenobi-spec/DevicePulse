@@ -1,10 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Modal, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Modal, ActivityIndicator, Share, Platform } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import * as Sharing from 'expo-sharing';
+import { captureRef } from 'react-native-view-shot';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { HealthRing } from '@/src/components/HealthRing';
 import { api } from '@/src/api';
@@ -146,36 +148,82 @@ export default function Results() {
   );
 }
 
-const SuccessView = ({ data, onDone }: { data: any; onDone: () => void }) => (
+const SuccessView = ({ data, onDone }: { data: any; onDone: () => void }) => {
+  const cardRef = React.useRef<View>(null);
+  const [referralCode, setReferralCode] = React.useState<string>('');
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const id = await getDeviceId();
+        const r = await api.referral(id);
+        setReferralCode(r.code);
+      } catch (e) { console.log(e); }
+    })();
+  }, []);
+
+  const onShare = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const gb = (data.reclaimed_mb / 1024).toFixed(2);
+    const msg = `I just freed ${gb} GB and boosted my phone's health from ${data.health_before} to ${data.health_after} with DevicePulse! 🚀${referralCode ? ` Use my code ${referralCode} — we both get a free week of Pro.` : ''}`;
+    try {
+      if (Platform.OS === 'web') {
+        await Share.share({ message: msg });
+        return;
+      }
+      const uri = await captureRef(cardRef, { format: 'png', quality: 0.95 });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { dialogTitle: 'Share your cleanup' });
+      } else {
+        await Share.share({ message: msg });
+      }
+    } catch (e) {
+      console.log(e);
+      try { await Share.share({ message: msg }); } catch {}
+    }
+  };
+
+  return (
   <View style={styles.container} testID="results-success-screen">
     <LinearGradient colors={theme.gradients.hero2} style={StyleSheet.absoluteFill} />
     <SafeAreaView style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: theme.space.xl }}>
-      <Animated.View entering={FadeIn.duration(500)} style={styles.successIcon}>
-        <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} />
-        <Ionicons name="checkmark" size={64} color={theme.color.onBrand} />
-      </Animated.View>
-      <Text style={styles.successTitle}>All clean!</Text>
-      <Text style={styles.successBody}>You reclaimed <Text style={{ color: theme.color.brand, fontWeight: '800' }}>{(data.reclaimed_mb / 1024).toFixed(2)} GB</Text> of storage.</Text>
+      {/* Shareable branded card */}
+      <View ref={cardRef} collapsable={false} style={styles.shareCard} testID="share-card">
+        <LinearGradient colors={theme.gradients.hero2} style={StyleSheet.absoluteFill} />
+        <Animated.View entering={FadeIn.duration(500)} style={styles.successIcon}>
+          <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} />
+          <Ionicons name="checkmark" size={54} color={theme.color.onBrand} />
+        </Animated.View>
+        <Text style={styles.successTitle}>All clean!</Text>
+        <Text style={styles.successBody}>Freed <Text style={{ color: theme.color.brand, fontWeight: '800' }}>{(data.reclaimed_mb / 1024).toFixed(2)} GB</Text> of storage</Text>
 
-      <View style={styles.compareRow}>
-        <View style={styles.compareCol}>
-          <Text style={styles.compareLabel}>Before</Text>
-          <HealthRing score={data.health_before} size={130} label=" " />
+        <View style={styles.compareRow}>
+          <View style={styles.compareCol}>
+            <Text style={styles.compareLabel}>Before</Text>
+            <HealthRing score={data.health_before} size={110} label=" " />
+          </View>
+          <Ionicons name="arrow-forward" size={22} color={theme.color.onSurface2} />
+          <View style={styles.compareCol}>
+            <Text style={styles.compareLabel}>After</Text>
+            <HealthRing score={data.health_after} size={110} label=" " />
+          </View>
         </View>
-        <Ionicons name="arrow-forward" size={22} color={theme.color.onSurface2} />
-        <View style={styles.compareCol}>
-          <Text style={styles.compareLabel}>After</Text>
-          <HealthRing score={data.health_after} size={130} label=" " />
-        </View>
+        <Text style={styles.brandStamp}>⚡ DevicePulse by Verolane</Text>
       </View>
 
-      <Pressable style={styles.cta} onPress={onDone} testID="done-button">
+      <Pressable style={styles.shareResultBtn} onPress={onShare} testID="share-result-button">
+        <Ionicons name="share-social" size={18} color={theme.color.brand} />
+        <Text style={styles.shareResultText}>Share result</Text>
+      </Pressable>
+
+      <Pressable style={[styles.cta, { marginTop: theme.space.md, width: '100%', maxWidth: 360 }]} onPress={onDone} testID="done-button">
         <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
         <Text style={styles.ctaText}>Back to dashboard</Text>
       </Pressable>
     </SafeAreaView>
   </View>
-);
+  );
+};
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.color.surface },
@@ -213,7 +261,11 @@ const styles = StyleSheet.create({
   successIcon: { width: 120, height: 120, borderRadius: 60, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', marginBottom: theme.space.xl },
   successTitle: { color: theme.color.onSurface, fontSize: 30, fontWeight: '800', letterSpacing: -0.5 },
   successBody: { color: theme.color.onSurface2, fontSize: 15, marginTop: 8, textAlign: 'center' },
-  compareRow: { flexDirection: 'row', alignItems: 'center', gap: theme.space.md, marginTop: theme.space.xl, marginBottom: theme.space.xl },
+  compareRow: { flexDirection: 'row', alignItems: 'center', gap: theme.space.md, marginTop: theme.space.lg },
   compareCol: { alignItems: 'center' },
   compareLabel: { color: theme.color.onSurface2, fontSize: 12, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 },
+  shareCard: { width: '100%', maxWidth: 360, borderRadius: theme.radius.lg, padding: theme.space.xl, alignItems: 'center', overflow: 'hidden', borderWidth: 1, borderColor: theme.color.border },
+  brandStamp: { color: theme.color.onSurface2, fontSize: 13, fontWeight: '700', marginTop: theme.space.lg, letterSpacing: 0.3 },
+  shareResultBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 50, paddingHorizontal: 28, borderRadius: theme.radius.pill, borderWidth: 1.5, borderColor: theme.color.brand, marginTop: theme.space.lg },
+  shareResultText: { color: theme.color.brand, fontSize: 15, fontWeight: '700' },
 });

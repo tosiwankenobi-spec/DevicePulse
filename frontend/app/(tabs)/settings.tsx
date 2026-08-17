@@ -35,9 +35,25 @@ export default function Settings() {
             </LinearGradient>
           </Pressable>
 
+          <Pressable style={styles.familyRow} onPress={() => router.push('/family')} testID="settings-family">
+            <View style={styles.rowIcon}>
+              <Ionicons name="people-outline" size={20} color={theme.color.brand} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Family plan</Text>
+              <Text style={styles.rowDesc}>Cover up to 5 devices</Text>
+            </View>
+            <View style={styles.navBadge}><Text style={styles.navBadgeText}>Best value</Text></View>
+            <Ionicons name="chevron-forward" size={18} color={theme.color.onSurface3} />
+          </Pressable>
+
           <Text style={styles.section}>Your Progress</Text>
           <View style={styles.card}>
+            <NavRow icon="flame-outline" label="Cleanup streak" onPress={() => router.push('/streak')} testID="settings-streak" />
+            <Divider />
             <NavRow icon="time-outline" label="Scan history" onPress={() => router.push('/history')} testID="settings-history" />
+            <Divider />
+            <NavRow icon="trending-up-outline" label="Storage forecast" onPress={() => router.push('/forecast')} testID="settings-forecast" />
             <Divider />
             <NavRow icon="gift-outline" label="Refer a friend" badge="Free Pro" onPress={() => router.push('/referral')} testID="settings-referral" />
             <Divider />
@@ -131,6 +147,7 @@ const styles = StyleSheet.create({
   rowDesc: { color: theme.color.onSurface3, fontSize: 12, marginTop: 2 },
   navBadge: { backgroundColor: theme.color.brand3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill, marginRight: 6 },
   navBadgeText: { color: theme.color.brand, fontSize: 10, fontWeight: '700' },
+  familyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.color.border, padding: theme.space.md, marginBottom: theme.space.md },
   footer: { alignItems: 'center', marginTop: theme.space.xxl, gap: 6 },
   footerBrand: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '600' },
   footerCorp: { color: theme.color.onSurface3, fontSize: 11 },

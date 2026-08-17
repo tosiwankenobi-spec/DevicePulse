@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
@@ -137,6 +137,16 @@ class ReminderPrefs(BaseModel):
     weekly_cleanup: bool = True
     after_downloads: bool = True
     battery_alerts: bool = False
+
+class FamilyMember(BaseModel):
+    id: str
+    name: str
+    device_type: str  # phone, tablet
+    added_at: str
+
+class AddMemberRequest(BaseModel):
+    name: str
+    device_type: str = "phone"
 
 
 # ==================== Helpers ====================
@@ -376,6 +386,130 @@ async def update_reminders(device_id: str, prefs: ReminderPrefs):
     data["device_id"] = device_id
     await db.reminders.update_one({"device_id": device_id}, {"$set": data}, upsert=True)
     return ReminderPrefs(**data)
+
+@api_router.get("/streak/{device_id}")
+async def get_streak(device_id: str):
+    docs = await db.cleanups.find({"device_id": device_id}).sort("completed_at", -1).to_list(1000)
+    total_cleanups = len(docs)
+
+    # Build set of ISO (year, week) that had a cleanup
+    weeks_with = set()
+    for d in docs:
+        try:
+            dt = datetime.fromisoformat(d["completed_at"])
+            iso = dt.isocalendar()
+            weeks_with.add((iso[0], iso[1]))
+        except Exception:
+            pass
+
+    now = datetime.now(timezone.utc)
+    cur_iso = now.isocalendar()
+
+    # Current streak: consecutive weeks ending this week (or last week) with cleanups
+    def week_minus(base_year, base_week, n):
+        # approximate by subtracting n*7 days from a date in that week
+        ref = datetime.fromisocalendar(base_year, base_week, 1).replace(tzinfo=timezone.utc)
+        ref = ref - timedelta(weeks=n)
+        iso = ref.isocalendar()
+        return (iso[0], iso[1])
+
+    current_streak = 0
+    # allow streak to be "alive" if this week OR last week had a cleanup
+    start_offset = 0 if (cur_iso[0], cur_iso[1]) in weeks_with else 1
+    if start_offset == 1 and week_minus(cur_iso[0], cur_iso[1], 1) not in weeks_with:
+        current_streak = 0
+    else:
+        n = start_offset
+        while week_minus(cur_iso[0], cur_iso[1], n) in weeks_with:
+            current_streak += 1
+            n += 1
+
+    # Build last 8 weeks activity grid (oldest -> newest)
+    grid = []
+    for i in range(7, -1, -1):
+        wk = week_minus(cur_iso[0], cur_iso[1], i)
+        grid.append({"active": wk in weeks_with})
+
+    milestones = [
+        {"key": "first_clean", "label": "First Cleanup", "icon": "sparkles", "unlocked": total_cleanups >= 1, "req": 1},
+        {"key": "streak_2", "label": "2-Week Streak", "icon": "flame", "unlocked": current_streak >= 2, "req": 2},
+        {"key": "clean_5", "label": "5 Cleanups", "icon": "trophy", "unlocked": total_cleanups >= 5, "req": 5},
+        {"key": "streak_4", "label": "4-Week Streak", "icon": "flame", "unlocked": current_streak >= 4, "req": 4},
+        {"key": "clean_10", "label": "10 Cleanups", "icon": "medal", "unlocked": total_cleanups >= 10, "req": 10},
+        {"key": "streak_8", "label": "8-Week Streak", "icon": "ribbon", "unlocked": current_streak >= 8, "req": 8},
+    ]
+
+    return {
+        "current_streak_weeks": current_streak,
+        "total_cleanups": total_cleanups,
+        "week_grid": grid,
+        "milestones": milestones,
+        "this_week_done": (cur_iso[0], cur_iso[1]) in weeks_with,
+    }
+
+@api_router.get("/forecast/{device_id}")
+async def get_forecast(device_id: str):
+    total_gb = 128.0
+    used_gb = 94.2  # seed baseline
+
+    # lifetime reclaimed reduces used slightly (capped)
+    docs = await db.cleanups.find({"device_id": device_id}).to_list(1000)
+    reclaimed_gb = min(20.0, sum(d.get("reclaimed_mb", 0.0) for d in docs) / 1024)
+    used_gb = max(20.0, used_gb - reclaimed_gb)
+    free_gb = round(total_gb - used_gb, 1)
+
+    daily_growth_gb = 0.72  # typical media/cache accumulation
+    days_until_full = int(free_gb / daily_growth_gb) if daily_growth_gb > 0 else 999
+    projected_full = (datetime.now(timezone.utc) + timedelta(days=days_until_full))
+
+    # projection samples every 5 days until full (max 12 points)
+    projection = []
+    d = 0
+    while d <= days_until_full and len(projection) < 13:
+        pu = min(total_gb, used_gb + daily_growth_gb * d)
+        projection.append({"day": d, "used_gb": round(pu, 1), "pct": round(pu / total_gb * 100)})
+        d += max(1, days_until_full // 12)
+
+    if projection[-1]["day"] < days_until_full:
+        projection.append({"day": days_until_full, "used_gb": total_gb, "pct": 100})
+
+    return {
+        "total_gb": total_gb,
+        "used_gb": round(used_gb, 1),
+        "free_gb": free_gb,
+        "daily_growth_gb": daily_growth_gb,
+        "days_until_full": days_until_full,
+        "projected_full_date": projected_full.strftime("%b %d, %Y"),
+        "projection": projection,
+    }
+
+@api_router.get("/family/{device_id}", response_model=List[FamilyMember])
+async def get_family(device_id: str):
+    docs = await db.family.find({"owner_id": device_id}).sort("added_at", 1).to_list(50)
+    return [
+        FamilyMember(id=d["id"], name=d["name"], device_type=d["device_type"], added_at=d["added_at"])
+        for d in docs
+    ]
+
+@api_router.post("/family/{device_id}/member", response_model=FamilyMember)
+async def add_family_member(device_id: str, req: AddMemberRequest):
+    count = await db.family.count_documents({"owner_id": device_id})
+    if count >= 5:
+        raise HTTPException(400, "Family plan supports up to 5 devices")
+    member = {
+        "id": str(uuid.uuid4()),
+        "owner_id": device_id,
+        "name": req.name,
+        "device_type": req.device_type,
+        "added_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.family.insert_one(member.copy())
+    return FamilyMember(id=member["id"], name=member["name"], device_type=member["device_type"], added_at=member["added_at"])
+
+@api_router.delete("/family/{device_id}/member/{member_id}")
+async def remove_family_member(device_id: str, member_id: str):
+    await db.family.delete_one({"owner_id": device_id, "id": member_id})
+    return {"removed": member_id}
 
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest):

@@ -28,4 +28,11 @@ export const api = {
   getReminders: (deviceId: string) => req<any>(`/reminders/${deviceId}`),
   updateReminders: (deviceId: string, prefs: any) =>
     req<any>(`/reminders/${deviceId}`, { method: 'PUT', body: JSON.stringify({ device_id: deviceId, ...prefs }) }),
+  streak: (deviceId: string) => req<any>(`/streak/${deviceId}`),
+  forecast: (deviceId: string) => req<any>(`/forecast/${deviceId}`),
+  family: (deviceId: string) => req<any[]>(`/family/${deviceId}`),
+  addMember: (deviceId: string, body: { name: string; device_type: string }) =>
+    req<any>(`/family/${deviceId}/member`, { method: 'POST', body: JSON.stringify(body) }),
+  removeMember: (deviceId: string, memberId: string) =>
+    req<any>(`/family/${deviceId}/member/${memberId}`, { method: 'DELETE' }),
 };

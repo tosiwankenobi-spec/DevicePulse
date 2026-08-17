@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
+import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -73,6 +74,7 @@ const Loader = () => (
 
 const StorageView = ({ data }: { data: any }) => {
   const usedPct = Math.round((data.used_gb / data.total_gb) * 100);
+  const router = useRouter();
   return (
     <View>
       <View style={styles.card}>
@@ -83,6 +85,12 @@ const StorageView = ({ data }: { data: any }) => {
         </View>
         <Text style={styles.helperText}>{data.free_gb.toFixed(1)} GB free</Text>
       </View>
+
+      <Pressable style={styles.forecastLink} onPress={() => router.push('/forecast')} testID="storage-forecast-link">
+        <Ionicons name="trending-up" size={18} color={theme.color.info} />
+        <Text style={styles.forecastLinkText}>See storage forecast</Text>
+        <Ionicons name="chevron-forward" size={16} color={theme.color.onSurface3} />
+      </Pressable>
 
       {/* Stacked horizontal bar */}
       <Text style={styles.sectionTitle}>Breakdown</Text>
@@ -193,6 +201,8 @@ const styles = StyleSheet.create({
   progressTrack: { height: 8, borderRadius: 4, backgroundColor: theme.color.surface3, marginTop: theme.space.md, overflow: 'hidden' },
   progressFill: { height: '100%', backgroundColor: theme.color.brand, borderRadius: 4 },
   helperText: { color: theme.color.onSurface3, fontSize: 12, marginTop: 8 },
+  forecastLink: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, padding: theme.space.md, borderWidth: 1, borderColor: theme.color.info + '44', marginBottom: theme.space.md },
+  forecastLinkText: { color: theme.color.onSurface, fontSize: 14, fontWeight: '600', flex: 1 },
   sectionTitle: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '700', letterSpacing: 1.1, textTransform: 'uppercase', marginTop: theme.space.md, marginBottom: theme.space.sm },
   stackedBar: { height: 14, borderRadius: 7, overflow: 'hidden', flexDirection: 'row', backgroundColor: theme.color.surface3 },
   breakdownRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },

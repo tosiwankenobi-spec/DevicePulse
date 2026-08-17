@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, ActivityIndicator } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,7 @@ import { HealthRing } from '@/src/components/HealthRing';
 import { GlassCard } from '@/src/components/GlassCard';
 import { VLogo } from '@/src/components/VLogo';
 import { api } from '@/src/api';
+import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
 
 type Health = {
@@ -31,11 +32,19 @@ export default function Home() {
   const [recs, setRecs] = useState<Rec[] | null>(null);
   const [loadingRecs, setLoadingRecs] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [streak, setStreak] = useState<number | null>(null);
+  const [forecastDays, setForecastDays] = useState<number | null>(null);
 
   const load = async () => {
     try {
       const h = await api.health();
       setHealth(h);
+    } catch (e) { console.log(e); }
+    try {
+      const id = await getDeviceId();
+      const [s, f] = await Promise.all([api.streak(id), api.forecast(id)]);
+      setStreak(s.current_streak_weeks);
+      setForecastDays(f.days_until_full);
     } catch (e) { console.log(e); }
   };
 
@@ -57,6 +66,12 @@ export default function Home() {
   };
 
   useEffect(() => { load(); }, []);
+  useFocusEffect(React.useCallback(() => {
+    getDeviceId().then((id) => Promise.all([api.streak(id), api.forecast(id)]).then(([s, f]) => {
+      setStreak(s.current_streak_weeks);
+      setForecastDays(f.days_until_full);
+    }).catch(() => {}));
+  }, []));
   useEffect(() => { if (health && !recs) loadRecs(health); }, [health]);
 
   const onRefresh = async () => {
@@ -141,6 +156,24 @@ export default function Home() {
               <Ionicons name="chevron-forward" size={18} color={theme.color.onSurface3} />
             </Pressable>
           )}
+
+          {/* Quick access: Streak + Forecast */}
+          <View style={styles.quickRow}>
+            <Pressable style={styles.quickCard} onPress={() => router.push('/streak')} testID="home-streak-card">
+              <View style={[styles.quickIcon, { backgroundColor: '#F59E0B22' }]}>
+                <Ionicons name="flame" size={20} color={theme.color.warning} />
+              </View>
+              <Text style={styles.quickLabel}>Streak</Text>
+              <Text style={styles.quickValue}>{streak != null ? `${streak}wk` : '—'}</Text>
+            </Pressable>
+            <Pressable style={styles.quickCard} onPress={() => router.push('/forecast')} testID="home-forecast-card">
+              <View style={[styles.quickIcon, { backgroundColor: theme.color.info + '22' }]}>
+                <Ionicons name="trending-up" size={20} color={theme.color.info} />
+              </View>
+              <Text style={styles.quickLabel}>Until full</Text>
+              <Text style={styles.quickValue}>{forecastDays != null ? `${forecastDays}d` : '—'}</Text>
+            </Pressable>
+          </View>
 
           {/* Stat grid */}
           <View style={styles.statGrid}>
@@ -229,4 +262,9 @@ const styles = StyleSheet.create({
   reminderIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: theme.color.warning + '22', alignItems: 'center', justifyContent: 'center' },
   reminderTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
   reminderBody: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
+  quickRow: { flexDirection: 'row', gap: theme.space.sm, paddingHorizontal: theme.space.lg, marginTop: theme.space.md },
+  quickCard: { flex: 1, backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.md, borderWidth: 1, borderColor: theme.color.border, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  quickIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  quickLabel: { color: theme.color.onSurface2, fontSize: 13, flex: 1 },
+  quickValue: { color: theme.color.onSurface, fontSize: 18, fontWeight: '800' },
 });
