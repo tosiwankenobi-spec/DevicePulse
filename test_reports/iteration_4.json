@@ -1,0 +1,45 @@
+{
+  "summary": "Iter-4 covers the NEW Emergent-managed push notification integration (SuprSend relay) on DevicePulse backend. Created /app/backend/tests/test_push_notifications.py with 14 pytest cases across 7 classes — ALL 14/14 PASSED (see /app/test_reports/pytest/pytest_push_iter4.xml). Also re-ran the existing auth/scoping suite: 45/45 PASSED (see /app/test_reports/pytest/pytest_regression_iter4.xml). Grand total 59/59 (100%). Verified per spec: (a) POST /api/register-push with placeholder EMERGENT_PUSH_KEY correctly maps upstream 401 → HTTP 500 with detail containing 'EMERGENT_PUSH_KEY missing or invalid'; server remains healthy (GET /api/ still 200) and pydantic validation still rejects malformed body (422). (b) POST /api/push/test returns 401 without Bearer and 200 {sent:false, reason:<str>} with a Bearer even when upstream fails (try/except in route). (c) POST /api/push/cleanup-reminder returns 401 without Bearer and 200 {sent:false} with Bearer, gracefully on upstream failure. (d) POST /api/family/member still returns 200 and persists the member (verified by follow-up GET /api/family) despite the family-added push failing upstream (wrapped in try/except at server.py:875-882). (e) send_push() unit validation confirmed by importing directly: >100 recipients raises ValueError('max 100 …'); missing 'title' OR 'message' raises ValueError('data must include title and message'). (f) REGRESSION — /ai/recommendations returned exactly 4 well-formed Recommendation objects (title/description/impact∈{low,medium,high}); only ONE call made to respect the 10/min rate limit. (g) REGRESSION — auth gating & per-user scoping (IDOR) all intact via re-run of 45 pre-existing cases (protected 401 without token including sessions/revoke/delete-account; public /device/* returns 200; /auth/session with bogus id → 401; expired token → 401; two-user isolation on family/history; sessions list marks only own current sid; revoke IDOR-safe; account deletion cascade). No mocked APIs. Real push DELIVERY was NOT tested (requires a real device + native build; explicitly out of scope per problem statement).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/register-push", "issue": "Endpoint is PUBLIC (no auth) but accepts a user_id in the body — with a real key this would allow anyone to register an arbitrary user_id → device_token mapping upstream. Not exploited today because placeholder key blocks upstream; consider gating with Depends(get_current_user) and deriving user_id from the token when the real key is set."},
+      {"endpoint": "POST /api/register-push", "issue": "Upstream 401 is surfaced as HTTP 500 (per spec). Semantically a 502 'Bad Gateway' or 503 might be more accurate; current mapping matches the review request and is acceptable."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_push_notifications.py",
+    "/app/test_reports/pytest/pytest_push_iter4.xml",
+    "/app/test_reports/pytest/pytest_regression_iter4.xml"
+  ],
+  "action_items": [
+    "None required — all 5 review-requested push behaviors pass, and all prior regressions still pass.",
+    "Optional hardening (see minor): require Bearer on POST /api/register-push and derive user_id from the token instead of the body, so a malicious client cannot associate a device_token with someone else's user_id once EMERGENT_PUSH_KEY is real in prod."
+  ],
+  "critical_code_review_comments": [
+    "server.py send_push (L38-53) — correct: recipients cap (>100) and required data keys (title/message) validated before the HTTP call; 401 → controlled HTTPException(500); ≥500 → HTTPException(502); other errors bubble via resp.raise_for_status().",
+    "server.py POST /push/test (L354-369) and POST /push/cleanup-reminder (L371-396) — both wrap send_push in try/except Exception and return {sent:false[, reason]}. Non-blocking, matches the graceful-failure contract.",
+    "server.py POST /family/member (L857-883) — send_push call is wrapped in try/except and logged as warning; member is inserted into db.family BEFORE the push attempt, so a push failure cannot leave the member un-persisted (verified by follow-up GET).",
+    "server.py POST /register-push (L344-352) — NOT wrapped in try/except (by design). Placeholder key produces HTTPException(500, 'EMERGENT_PUSH_KEY missing or invalid'); server did not crash across multiple consecutive calls (verified).",
+    "server.py _push_client (L31) — module-scope AsyncClient with X-Push-Key header and 10s timeout; properly closed on shutdown (L980-983). Header value captured at import time — if EMERGENT_PUSH_KEY is rotated at runtime, backend must be restarted (acceptable).",
+    "Public /api/register-push endpoint accepts arbitrary user_id in the body — recommend gating with Depends(get_current_user) once the real key is provisioned (see minor issue #1)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_push_notifications.py (new — 14 tests, 7 classes)"
+  ],
+  "success_rate": {
+    "backend": "100% (59/59 = 14 new push + 45 regression)",
+    "frontend": "not tested (testing_type: backend only)"
+  },
+  "seed_data_creation": "Each test that needs auth seeds a TEST_PUSH_-prefixed users + user_sessions row (with sid) directly into MongoDB and cleans up in fixture teardown (users, user_sessions, family, cleanups). No shared state between tests. send_push unit tests import the symbol from server.py and drive it via asyncio.get_event_loop().run_until_complete — no HTTP call reaches upstream because ValueError is raised before that.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "EMERGENT_PUSH_KEY is intentionally 'placeholder' in preview — do NOT expect any push to actually deliver. The three push endpoints have distinct failure contracts: (a) /register-push surfaces upstream 401 as HTTP 500 (NOT wrapped in try/except); (b) /push/test and /push/cleanup-reminder ARE wrapped in try/except and return 200 {sent:false...}; (c) /family/member push is wrapped and never blocks member creation. If you rotate EMERGENT_PUSH_KEY to a real value, restart backend (`sudo supervisorctl restart backend`) because the httpx.AsyncClient captures the header at import time. Tests can be re-run: `pytest /app/backend/tests/test_push_notifications.py /app/backend/tests/test_auth_and_scoping.py -v`. Keep AI-endpoint calls minimal (rate-limited 10/min per client-IP).",
+  "rca_of_issue": "N/A — no failures. All new push endpoints behave gracefully with the placeholder key and no regressions were introduced."
+}

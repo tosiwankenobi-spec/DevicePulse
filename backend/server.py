@@ -25,6 +25,34 @@ db = client[os.environ['DB_NAME']]
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 EMERGENT_AUTH_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 
+# ---------- Emergent managed push ----------
+PUSH_BASE_URL = "https://integrations.emergentagent.com"
+PUSH_KEY = os.environ.get("EMERGENT_PUSH_KEY", "placeholder")
+_push_client = httpx.AsyncClient(base_url=PUSH_BASE_URL, headers={"X-Push-Key": PUSH_KEY}, timeout=10.0)
+
+class RegisterPushBody(BaseModel):
+    user_id: str
+    platform: str
+    device_token: str
+
+async def send_push(recipients: List[str], data: dict, idempotency_key: Optional[str] = None) -> None:
+    if not recipients:
+        return
+    if len(recipients) > 100:
+        raise ValueError("max 100 recipients per /trigger call; chunk before sending")
+    if "title" not in data or "message" not in data:
+        raise ValueError("data must include title and message")
+    payload: dict = {"recipients": recipients, "data": data}
+    if idempotency_key:
+        payload["$idempotency_key"] = idempotency_key
+    resp = await _push_client.post("/api/v1/push/trigger", json=payload)
+    if resp.status_code == 401:
+        raise HTTPException(500, "EMERGENT_PUSH_KEY missing or invalid")
+    if resp.status_code >= 500:
+        raise HTTPException(502, "Push provider unavailable")
+    resp.raise_for_status()
+
+
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
@@ -311,6 +339,64 @@ async def delete_account(user=Depends(get_current_user)):
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
     return {"deleted": True}
+
+# ---------- Push ----------
+@api_router.post("/register-push", status_code=201)
+async def register_push(body: RegisterPushBody, user=Depends(get_current_user)):
+    # Derive identity from the authenticated token (ignore any client-supplied user_id)
+    payload = {"user_id": user["user_id"], "platform": body.platform, "device_token": body.device_token}
+    resp = await _push_client.post("/api/v1/push/users/register", json=payload)
+    if resp.status_code == 401:
+        raise HTTPException(500, "EMERGENT_PUSH_KEY missing or invalid")
+    if resp.status_code >= 500:
+        raise HTTPException(502, "Push provider unavailable")
+    resp.raise_for_status()
+    return {"status": "registered"}
+
+@api_router.post("/push/test")
+async def push_test(user=Depends(get_current_user)):
+    try:
+        await send_push(
+            recipients=[user["user_id"]],
+            data={
+                "title": "DevicePulse",
+                "message": "Push notifications are working! Your device is in good hands. ⚡",
+                "action_url": "/(tabs)",
+            },
+            idempotency_key=f"test-{user['user_id']}-{uuid.uuid4().hex[:8]}",
+        )
+        return {"sent": True}
+    except Exception as e:
+        logging.warning(f"Test push failed (non-blocking): {e}")
+        return {"sent": False, "reason": "Push delivers only on a real device after publishing a build."}
+
+@api_router.post("/push/cleanup-reminder")
+async def push_cleanup_reminder(user=Depends(get_current_user)):
+    """Weekly cleanup reminder + streak-at-risk nudge for the current user."""
+    uid = user["user_id"]
+    # streak-at-risk check
+    docs = await db.cleanups.find({"device_id": uid}).to_list(1000)
+    weeks_with = set()
+    for d in docs:
+        try:
+            iso = datetime.fromisoformat(d["completed_at"]).isocalendar()
+            weeks_with.add((iso[0], iso[1]))
+        except Exception:
+            pass
+    cur = datetime.now(timezone.utc).isocalendar()
+    this_week_done = (cur[0], cur[1]) in weeks_with
+    if this_week_done:
+        title, message = "Nice work this week", "Your device is optimized. Keep the streak alive next week!"
+    else:
+        title, message = "Time to optimize", "Your device could use a quick scan to stay fast and clean."
+    try:
+        await send_push(recipients=[uid], data={"title": title, "message": message, "action_url": "/smart-scan"},
+                        idempotency_key=f"reminder-{uid}-{cur[0]}-{cur[1]}")
+        return {"sent": True}
+    except Exception as e:
+        logging.warning(f"Reminder push failed (non-blocking): {e}")
+        return {"sent": False}
+
 
 
 @api_router.get("/device/health", response_model=DeviceHealth)
@@ -788,6 +874,14 @@ async def add_family_member(req: AddMemberRequest, user=Depends(get_current_user
         "added_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.family.insert_one(member.copy())
+    try:
+        await send_push(
+            recipients=[device_id],
+            data={"title": "Family plan updated", "message": f"{name} was added to your family plan.", "action_url": "/family"},
+            idempotency_key=f"family-{member['id']}",
+        )
+    except Exception as e:
+        logging.warning(f"Family push failed (non-blocking): {e}")
     return FamilyMember(id=member["id"], name=member["name"], device_type=member["device_type"], added_at=member["added_at"])
 
 @api_router.delete("/family/member/{member_id}")
@@ -885,3 +979,7 @@ async def create_indexes():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+    try:
+        await _push_client.aclose()
+    except Exception:
+        pass

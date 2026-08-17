@@ -17,6 +17,7 @@ export default function Settings() {
   const [haptics, setHaptics] = React.useState(true);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
+  const [pushMsg, setPushMsg] = React.useState('');
 
   const onLogout = async () => {
     await logout();
@@ -30,6 +31,16 @@ export default function Settings() {
     } catch (e) { console.log(e); }
     await logout();
     router.replace('/login');
+  };
+
+  const onTestPush = async () => {
+    try {
+      const res = await api.testPush();
+      setPushMsg(res?.sent ? 'Test notification sent!' : 'Push delivers on a real device after publishing a build.');
+    } catch (e) {
+      setPushMsg('Push delivers on a real device after publishing a build.');
+    }
+    setTimeout(() => setPushMsg(''), 4000);
   };
 
   return (
@@ -106,10 +117,13 @@ export default function Settings() {
             <Divider />
             <NavRow icon="notifications-outline" label="Smart reminders" onPress={() => router.push('/reminders')} testID="settings-reminders" />
             <Divider />
+            <NavRow icon="paper-plane-outline" label="Send test notification" onPress={onTestPush} testID="settings-test-push" />
+            <Divider />
             <Row icon="phone-portrait-outline" label="Haptic feedback" desc="Feel every tap">
               <Switch value={haptics} onValueChange={setHaptics} trackColor={{ true: theme.color.brand, false: theme.color.border }} thumbColor="#fff" testID="toggle-haptics" />
             </Row>
           </View>
+          {!!pushMsg && <Text style={styles.pushMsg} testID="push-msg">{pushMsg}</Text>}
 
           <Text style={styles.section}>Support</Text>
           <View style={styles.card}>
@@ -227,6 +241,7 @@ const styles = StyleSheet.create({
   profileEmail: { color: theme.color.onSurface2, fontSize: 13, marginTop: 2 },
   logoutBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 52, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.error + '55', backgroundColor: theme.color.surface2, marginTop: theme.space.lg },
   logoutText: { color: theme.color.error, fontSize: 15, fontWeight: '700' },
+  pushMsg: { color: theme.color.brand, fontSize: 13, marginTop: 8, textAlign: 'center' },
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', alignItems: 'center', justifyContent: 'center', padding: theme.space.xl },
   modalCard: { backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.xl, borderWidth: 1, borderColor: theme.color.border, alignItems: 'center', width: '100%' },
   modalIcon: { width: 58, height: 58, borderRadius: 29, backgroundColor: theme.color.error + '22', alignItems: 'center', justifyContent: 'center', marginBottom: theme.space.md },

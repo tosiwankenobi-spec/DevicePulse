@@ -32,6 +32,9 @@ export const api = {
   sessions: () => req<any[]>('/auth/sessions'),
   revokeSession: (sid: string) => req<any>(`/auth/sessions/${sid}/revoke`, { method: 'POST' }),
   deleteAccount: () => req<any>('/auth/account', { method: 'DELETE' }),
+  registerPush: (body: { user_id: string; platform: string; device_token: string }) =>
+    req<any>('/register-push', { method: 'POST', body: JSON.stringify(body) }),
+  testPush: () => req<any>('/push/test', { method: 'POST' }),
 
   // Device (simulated)
   health: () => req<any>('/device/health'),

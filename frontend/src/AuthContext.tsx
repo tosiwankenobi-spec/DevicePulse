@@ -4,6 +4,7 @@ import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
 import { api, setUnauthorizedHandler } from './api';
 import { saveToken, getToken, clearToken } from './authStorage';
+import { registerForPush } from './push';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -70,6 +71,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(null);
     });
   }, []);
+
+  // Register this device for push whenever a user is signed in (native only)
+  useEffect(() => {
+    if (user?.user_id) registerForPush(user.user_id);
+  }, [user?.user_id]);
 
   // Initial bootstrap
   useEffect(() => {
