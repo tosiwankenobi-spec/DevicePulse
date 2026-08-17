@@ -131,7 +131,9 @@ export default function Home() {
           {/* Hero Ring */}
           <GlassCard style={styles.hero} testID="home-hero-card">
             <View style={{ alignItems: 'center' }}>
-              <HealthRing score={health.score} testID="home-health-ring" />
+              <Pressable onPress={() => router.push('/trends')} testID="home-health-ring-btn">
+                <HealthRing score={health.score} testID="home-health-ring" />
+              </Pressable>
               <Text style={styles.heroSubtitle}>
                 {health.issues_found} items can be optimized
               </Text>

@@ -51,6 +51,8 @@ export default function Settings() {
           <View style={styles.card}>
             <NavRow icon="flame-outline" label="Cleanup streak" onPress={() => router.push('/streak')} testID="settings-streak" />
             <Divider />
+            <NavRow icon="pulse-outline" label="Health trends" onPress={() => router.push('/trends')} testID="settings-trends" />
+            <Divider />
             <NavRow icon="time-outline" label="Scan history" onPress={() => router.push('/history')} testID="settings-history" />
             <Divider />
             <NavRow icon="trending-up-outline" label="Storage forecast" onPress={() => router.push('/forecast')} testID="settings-forecast" />

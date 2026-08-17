@@ -392,7 +392,6 @@ async def get_streak(device_id: str):
     docs = await db.cleanups.find({"device_id": device_id}).sort("completed_at", -1).to_list(1000)
     total_cleanups = len(docs)
 
-    # Build set of ISO (year, week) that had a cleanup
     weeks_with = set()
     for d in docs:
         try:
@@ -402,33 +401,45 @@ async def get_streak(device_id: str):
         except Exception:
             pass
 
+    # frozen weeks bridge gaps
+    freeze_docs = await db.freezes.find({"device_id": device_id}).to_list(200)
+    frozen_weeks = set()
+    for f in freeze_docs:
+        try:
+            y, w = f["week_key"].split("-")
+            frozen_weeks.add((int(y), int(w)))
+        except Exception:
+            pass
+
+    active_weeks = weeks_with | frozen_weeks
+
     now = datetime.now(timezone.utc)
     cur_iso = now.isocalendar()
+    cur_month = now.strftime("%Y-%m")
 
-    # Current streak: consecutive weeks ending this week (or last week) with cleanups
     def week_minus(base_year, base_week, n):
-        # approximate by subtracting n*7 days from a date in that week
         ref = datetime.fromisocalendar(base_year, base_week, 1).replace(tzinfo=timezone.utc)
         ref = ref - timedelta(weeks=n)
         iso = ref.isocalendar()
         return (iso[0], iso[1])
 
     current_streak = 0
-    # allow streak to be "alive" if this week OR last week had a cleanup
-    start_offset = 0 if (cur_iso[0], cur_iso[1]) in weeks_with else 1
-    if start_offset == 1 and week_minus(cur_iso[0], cur_iso[1], 1) not in weeks_with:
+    start_offset = 0 if (cur_iso[0], cur_iso[1]) in active_weeks else 1
+    if start_offset == 1 and week_minus(cur_iso[0], cur_iso[1], 1) not in active_weeks:
         current_streak = 0
     else:
         n = start_offset
-        while week_minus(cur_iso[0], cur_iso[1], n) in weeks_with:
+        while week_minus(cur_iso[0], cur_iso[1], n) in active_weeks:
             current_streak += 1
             n += 1
 
-    # Build last 8 weeks activity grid (oldest -> newest)
     grid = []
     for i in range(7, -1, -1):
         wk = week_minus(cur_iso[0], cur_iso[1], i)
-        grid.append({"active": wk in weeks_with})
+        grid.append({
+            "active": wk in weeks_with,
+            "frozen": wk in frozen_weeks and wk not in weeks_with,
+        })
 
     milestones = [
         {"key": "first_clean", "label": "First Cleanup", "icon": "sparkles", "unlocked": total_cleanups >= 1, "req": 1},
@@ -439,12 +450,125 @@ async def get_streak(device_id: str):
         {"key": "streak_8", "label": "8-Week Streak", "icon": "ribbon", "unlocked": current_streak >= 8, "req": 8},
     ]
 
+    freeze_used_this_month = any(f.get("month_key") == cur_month for f in freeze_docs)
+
     return {
         "current_streak_weeks": current_streak,
         "total_cleanups": total_cleanups,
         "week_grid": grid,
         "milestones": milestones,
         "this_week_done": (cur_iso[0], cur_iso[1]) in weeks_with,
+        "freeze_available": not freeze_used_this_month,
+        "freezes_used": len([f for f in freeze_docs]),
+    }
+
+@api_router.post("/streak/{device_id}/freeze")
+async def use_freeze(device_id: str):
+    now = datetime.now(timezone.utc)
+    cur_iso = now.isocalendar()
+    cur_month = now.strftime("%Y-%m")
+
+    existing = await db.freezes.find_one({"device_id": device_id, "month_key": cur_month})
+    if existing:
+        raise HTTPException(400, "You've already used your freeze this month")
+
+    docs = await db.cleanups.find({"device_id": device_id}).to_list(1000)
+    weeks_with = set()
+    for d in docs:
+        try:
+            iso = datetime.fromisoformat(d["completed_at"]).isocalendar()
+            weeks_with.add((iso[0], iso[1]))
+        except Exception:
+            pass
+    freeze_docs = await db.freezes.find({"device_id": device_id}).to_list(200)
+    frozen = set()
+    for f in freeze_docs:
+        y, w = f["week_key"].split("-")
+        frozen.add((int(y), int(w)))
+
+    def week_minus(n):
+        ref = datetime.fromisocalendar(cur_iso[0], cur_iso[1], 1).replace(tzinfo=timezone.utc) - timedelta(weeks=n)
+        iso = ref.isocalendar()
+        return (iso[0], iso[1])
+
+    # find the most recent missed week (gap) to bridge, within last 8 weeks
+    target = None
+    for n in range(0, 8):
+        wk = week_minus(n)
+        if wk not in weeks_with and wk not in frozen:
+            target = wk
+            break
+
+    if target is None:
+        raise HTTPException(400, "No missed week to protect right now")
+
+    doc = {
+        "device_id": device_id,
+        "week_key": f"{target[0]}-{target[1]}",
+        "month_key": cur_month,
+        "applied_at": now.isoformat(),
+    }
+    await db.freezes.insert_one(doc.copy())
+    return {"frozen_week": doc["week_key"], "month_key": cur_month}
+
+@api_router.get("/device/cache-breakdown")
+async def get_cache_breakdown(device_id: str = "anon"):
+    apps = [
+        {"app": "Instagram", "icon": "📷", "cache_mb": 342.6, "category": "Social"},
+        {"app": "Chrome", "icon": "🌐", "cache_mb": 218.4, "category": "Browser"},
+        {"app": "YouTube", "icon": "▶️", "cache_mb": 512.9, "category": "Media"},
+        {"app": "WhatsApp", "icon": "💬", "cache_mb": 168.2, "category": "Messaging"},
+        {"app": "Spotify", "icon": "🎵", "cache_mb": 286.1, "category": "Media"},
+        {"app": "TikTok", "icon": "🎬", "cache_mb": 431.7, "category": "Social"},
+        {"app": "Maps", "icon": "🗺️", "cache_mb": 94.3, "category": "Navigation"},
+        {"app": "Gmail", "icon": "✉️", "cache_mb": 62.8, "category": "Productivity"},
+    ]
+    for a in apps:
+        a["id"] = str(uuid.uuid4())
+    apps.sort(key=lambda x: x["cache_mb"], reverse=True)
+    total = round(sum(a["cache_mb"] for a in apps), 1)
+    return {"total_mb": total, "apps": apps}
+
+@api_router.get("/device/health-trend/{device_id}")
+async def get_health_trend(device_id: str):
+    docs = await db.cleanups.find({"device_id": device_id}).to_list(1000)
+    weeks_with = {}
+    for d in docs:
+        try:
+            iso = datetime.fromisoformat(d["completed_at"]).isocalendar()
+            key = (iso[0], iso[1])
+            weeks_with[key] = weeks_with.get(key, 0) + 1
+        except Exception:
+            pass
+
+    now = datetime.now(timezone.utc)
+    cur_iso = now.isocalendar()
+
+    def week_info(n):
+        ref = datetime.fromisocalendar(cur_iso[0], cur_iso[1], 1).replace(tzinfo=timezone.utc) - timedelta(weeks=n)
+        iso = ref.isocalendar()
+        return (iso[0], iso[1]), ref
+
+    points = []
+    score = 58
+    for i in range(7, -1, -1):
+        (wk, ref) = week_info(i)
+        if wk in weeks_with:
+            score = min(97, score + 8)
+        else:
+            score = max(45, score - 3)
+        points.append({
+            "label": ref.strftime("%b %d"),
+            "score": score,
+            "cleaned": wk in weeks_with,
+        })
+
+    first = points[0]["score"]
+    last = points[-1]["score"]
+    return {
+        "points": points,
+        "change": last - first,
+        "current": last,
     }
 
 @api_router.get("/forecast/{device_id}")

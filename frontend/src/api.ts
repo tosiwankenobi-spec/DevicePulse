@@ -29,6 +29,9 @@ export const api = {
   updateReminders: (deviceId: string, prefs: any) =>
     req<any>(`/reminders/${deviceId}`, { method: 'PUT', body: JSON.stringify({ device_id: deviceId, ...prefs }) }),
   streak: (deviceId: string) => req<any>(`/streak/${deviceId}`),
+  useFreeze: (deviceId: string) => req<any>(`/streak/${deviceId}/freeze`, { method: 'POST' }),
+  cacheBreakdown: (deviceId: string) => req<any>(`/device/cache-breakdown?device_id=${deviceId}`),
+  healthTrend: (deviceId: string) => req<any>(`/device/health-trend/${deviceId}`),
   forecast: (deviceId: string) => req<any>(`/forecast/${deviceId}`),
   family: (deviceId: string) => req<any[]>(`/family/${deviceId}`),
   addMember: (deviceId: string, body: { name: string; device_type: string }) =>
