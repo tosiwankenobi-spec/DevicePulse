@@ -92,7 +92,7 @@ export default function Forecast() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.tipTitle}>Stay ahead of it</Text>
                 <Text style={styles.tipBody}>
-                  A weekly Smart Scan clears ~1.5 GB and can push your "full" date back by weeks.
+                  A weekly Smart Scan clears ~1.5 GB and can push your &quot;full&quot; date back by weeks.
                 </Text>
               </View>
             </View>

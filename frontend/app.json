@@ -18,8 +18,7 @@
         "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.emergent.verolanepulse.e73nen",
-      "googleServicesFile": "./google-services.json"
+      "package": "com.emergent.verolanepulse.e73nen"
     },
     "web": {
       "bundler": "metro",

@@ -64,7 +64,7 @@ export default function RootLayout() {
     const route = (data: any) => {
       const url = data?.deeplink || data?.action_url;
       if (!url) return;
-      url.startsWith("http") ? Linking.openURL(url) : router.push(url);
+      if (url.startsWith("http")) { Linking.openURL(url); } else { router.push(url); }
     };
 
     // 3. Warm tap
