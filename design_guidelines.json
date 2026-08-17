@@ -1,0 +1,194 @@
+{
+  "app_name": "DevicePulse",
+  "personality": "Fusion of 6 Glass / Luxe DARK and 7 Dark-First Utility",
+  "personality_one_liner": "A sleek, high-trust digital command center that makes device optimization feel precise, deeply analytical, and reassuring.",
+  "color": {
+    "surface": "#050F14",
+    "onSurface": "#F0FDFA",
+    "surfaceSecondary": "#0B1B24",
+    "onSurfaceSecondary": "#A3C2C2",
+    "surfaceTertiary": "#122936",
+    "onSurfaceTertiary": "#82A7A6",
+    "surfaceInverse": "#F0FDFA",
+    "onSurfaceInverse": "#050F14",
+    "brand": "#10B981",
+    "brandPrimary": "#10B981",
+    "onBrandPrimary": "#022C22",
+    "brandSecondary": "#059669",
+    "onBrandSecondary": "#ECFDF5",
+    "brandTertiary": "#064E3B",
+    "onBrandTertiary": "#D1FAE5",
+    "success": "#10B981",
+    "onSuccess": "#022C22",
+    "warning": "#F59E0B",
+    "onWarning": "#451A03",
+    "error": "#EF4444",
+    "onError": "#450A0A",
+    "info": "#0EA5E9",
+    "onInfo": "#082F49",
+    "border": "#163342",
+    "borderStrong": "#204B5E",
+    "divider": "#163342"
+  },
+  "typography": {
+    "displayFontFamily": "Outfit",
+    "textFontFamily": "PlusJakartaSans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous spacing on the dashboard to emphasize the main progress ring; tighter spacing in lists (Scan/Insights) for high information density.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Use glass on the bottom tab bar and sticky headers.",
+      "Apply glass to the main Device Health card over the circuit background.",
+      "Use glass for confirmation bottom sheets and action modals."
+    ],
+    "dont's": [
+      "Do not use glass on dense list items or simple form inputs.",
+      "Do not stack more than 2 glass surfaces on one screen."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Splash",
+      "purpose": "Brand introduction with an animated V logo using Skia circuit lines.",
+      "states": {
+        "loading": "Animated drawing of the V logo paths.",
+        "empty": "N/A",
+        "error": "N/A"
+      },
+      "layout": "Full-bleed gradient from deep navy-teal to dark teal, with the stylized V logo centered. Subtle background circuit pattern overlaid with low opacity."
+    },
+    {
+      "name": "Onboarding",
+      "purpose": "Educate the user on device health, security, and cleaning benefits in 3-4 slides.",
+      "states": {
+        "loading": "N/A",
+        "empty": "N/A",
+        "error": "N/A"
+      },
+      "layout": "Full-screen scenes with large animated illustrations/SVGs on top. Title, subtitle, and a sticky 'Next' primary button wrapped in a glass container at the bottom."
+    },
+    {
+      "name": "Pro Paywall",
+      "purpose": "Upsell screen with feature comparison and subscription tiers.",
+      "states": {
+        "loading": "Centered spinner if fetching prices.",
+        "empty": "N/A",
+        "error": "Error message with 'Retry' to fetch subscription data."
+      },
+      "layout": "Cinematic dark layout. Featured graphic at the top, followed by a highlighted glassmorphic card comparing Free vs Pro. Monthly/Yearly toggle pills, and a large primary 'Unlock Pro' button sticky at the bottom."
+    },
+    {
+      "name": "Home (Dashboard)",
+      "purpose": "Centralized at-a-glance device health metrics and primary entry point for Smart Scan.",
+      "states": {
+        "loading": "Skeleton loaders for the metric cards.",
+        "empty": "N/A",
+        "error": "Error fetching device stats with a 'Retry' button."
+      },
+      "layout": "Large hero section featuring an animated circular progress ring (Health Score) using Skia. Below, a 2-column grid of quick stats (Storage, RAM, Battery, Security) using tonal cards. A sticky 'Smart Scan' FAB or bottom-anchored CTA button."
+    },
+    {
+      "name": "Scan Hub",
+      "purpose": "Grid/list of bite-sized optimization tools like Duplicate Photos, Large Files, etc.",
+      "states": {
+        "loading": "Skeleton list of tools.",
+        "empty": "N/A",
+        "error": "Error fetching module list."
+      },
+      "layout": "Categorized sections (e.g., Storage, Performance). Use horizontal scrolling cards for suggested cleanups, and a vertical list for all other tools with clear icons and brief descriptions."
+    },
+    {
+      "name": "Results / Confirmation",
+      "purpose": "Before/after cleanup report and celebratory reinforcement.",
+      "states": {
+        "loading": "Scanning animation with particle effects.",
+        "empty": "N/A",
+        "error": "Failed to clean, with a retry option."
+      },
+      "layout": "A 'Congratulations' layout showing space saved or threats removed via a large success graphic. Detailed breakdown below. Prominent 'Done' button."
+    },
+    {
+      "name": "Insights",
+      "purpose": "Detailed analytics for Storage, Battery, and Security.",
+      "states": {
+        "loading": "Skeletons for charts.",
+        "empty": "Illustration stating 'No data collected yet'.",
+        "error": "Error fetching insights."
+      },
+      "layout": "Segmented controls at the top (Storage, Battery, Security). Content switches below. Storage shows a donut chart breakdown. Battery shows health %, cycle count, and temperature. Security shows a threat status card and list."
+    },
+    {
+      "name": "Settings",
+      "purpose": "Manage profile, subscription, and app preferences.",
+      "states": {
+        "loading": "Spinner.",
+        "empty": "N/A",
+        "error": "N/A"
+      },
+      "layout": "Standard vertical list with grouped sections. Prominent 'Manage Pro' banner at the top if subscribed, or 'Upgrade to Pro' if not."
+    }
+  ],
+  "images": {
+    "splash_bg": {
+      "url": "https://images.unsplash.com/photo-1782330421256-c65e36240e05?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTJ8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMGRhcmslMjB0ZWFsJTIwYW5kJTIwZ3JlZW4lMjBjaXJjdWl0JTIwYm9hcmQlMjBwYXR0ZXJuJTIwYmFja2dyb3VuZHxlbnwwfHx8fDE3ODY5NzYyOTF8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Intricate green circuit board featuring glowing lines and components"
+    },
+    "pro_hero_bg": {
+      "url": "https://images.unsplash.com/photo-1774385439710-6cb1d8a9141d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTN8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMGdsb3dpbmclMjBncmVlbiUyMGRhdGElMjB2aXN1YWxpemF0aW9uJTIwcmluZ3MlMjBvbiUyMGRhcmslMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc4Njk3NjI5MXww&ixlib=rb-4.1.0&q=85",
+      "alt": "Green concentric circles with vertical lines on black background"
+    },
+    "security_card_bg": {
+      "url": "https://images.unsplash.com/photo-1786046613175-f1c2eafbe7a0?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NjZ8MHwxfHNlYXJjaHwxfHxncmVlbiUyMHRlY2glMjBnbG93aW5nJTIwc2VjdXJpdHklMjBzaGllbGQlMjBvbiUyMGRhcmslMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc4Njk3NjI5MXww&ixlib=rb-4.1.0&q=85",
+      "alt": "Green glowing particles forming a horizontal pattern on dark background"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the color palette: Deep navy-teal bases (surface: #050F14, surfaceSecondary: #0B1B24) with fresh green accents (brandPrimary: #10B981). Do NOT use any generic blues or purples.",
+    "The Home dashboard MUST feature a large, beautifully animated circular progress ring (health score) using React Native Skia. The ring should have a gradient stroke moving from teal to fresh green.",
+    "Implement the 'V' logo for Verolane using Skia/SVG on the splash screen with subtle circuit-line details.",
+    "Use glassmorphism (expo-glass-effect/expo-blur) for the sticky bottom tab bar, bottom sheets, and the main hero card on the Home dashboard overlaying the circuit background image.",
+    "Ensure the UI feels 'at-a-glance'. For the Scan Hub, break complex tasks into bite-sized actionable sections (Photos, Large Files) instead of a single ambiguous 'Clean All' button.",
+    "For all cleanup actions, implement a confirmation modal (bottom sheet) with reassuring explanations before proceeding.",
+    "Add celebratory animations (e.g., Lottie or Skia particles) and 'Space Saved' metrics on the Results screen.",
+    "Include subtle haptics (impactLight/impactMedium) on primary interactions like starting a scan, toggling options, or completing a cleanup task.",
+    "Apply a top-to-bottom vertical gradient scrim when placing text over any background images (like the Pro Paywall hero)."
+  ]
+}
