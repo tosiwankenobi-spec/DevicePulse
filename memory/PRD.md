@@ -48,3 +48,13 @@
 
 ## Simulated Data
 All device stats are simulated (server-side seed) — real deep-cleanup requires native modules. Positioned as a polished preview/demo.
+
+
+## Changelog (2026-08-17)
+- Emergent Google Auth (login gate, sessions, account deletion, profile) — fixes IDOR
+- Security audit hardening (rate limit, prompt-injection allowlist, input caps, CORS)
+- Emergent push notifications (register + relay, test/reminder/family triggers, tap routing)
+- Emergent RevenueCat subscriptions (paywall: $9.99/mo, $79.99/yr) + 7-day yearly free trial
+- Trial-ending local reminder (~24h before expiry via RevenueCat expirationDate)
+- Feature set: dashboard, smart scan, duplicates, large files, junk-by-app, insights, storage forecast, streak+freeze, badges+share, history, referrals, family plan, widget preview, guest peek
+- Status: COMPLETE per user
