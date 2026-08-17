@@ -16,7 +16,7 @@ export default function Forecast() {
   useEffect(() => {
     (async () => {
       const id = await getDeviceId();
-      try { setData(await api.forecast(id)); } catch (e) { console.log(e); }
+      try { setData(await api.forecast()); } catch (e) { console.log(e); }
       finally { setLoading(false); }
     })();
   }, []);

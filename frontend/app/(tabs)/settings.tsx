@@ -4,13 +4,21 @@ import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import { VLogo } from '@/src/components/VLogo';
+import { useAuth } from '@/src/AuthContext';
 import { theme } from '@/src/theme';
 
 export default function Settings() {
   const router = useRouter();
+  const { user, logout } = useAuth();
   const [autoScan, setAutoScan] = React.useState(true);
   const [haptics, setHaptics] = React.useState(true);
+
+  const onLogout = async () => {
+    await logout();
+    router.replace('/login');
+  };
 
   return (
     <View style={styles.container} testID="settings-screen">
@@ -20,6 +28,22 @@ export default function Settings() {
           <Text style={styles.title}>Settings</Text>
         </View>
         <ScrollView contentContainerStyle={{ paddingBottom: 140, paddingHorizontal: theme.space.lg }} showsVerticalScrollIndicator={false}>
+          {/* Profile */}
+          {user && (
+            <View style={styles.profileCard} testID="settings-profile">
+              <View style={styles.avatar}>
+                {user.picture ? (
+                  <Image source={user.picture} style={styles.avatarImg} contentFit="cover" />
+                ) : (
+                  <Text style={styles.avatarInitial}>{(user.name || user.email || '?')[0].toUpperCase()}</Text>
+                )}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.profileName} numberOfLines={1}>{user.name}</Text>
+                <Text style={styles.profileEmail} numberOfLines={1}>{user.email}</Text>
+              </View>
+            </View>
+          )}
           {/* Pro banner */}
           <Pressable onPress={() => router.push('/paywall')} testID="settings-pro-banner">
             <LinearGradient colors={theme.gradients.brand} style={styles.proBanner} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
@@ -91,6 +115,11 @@ export default function Settings() {
             <NavRow icon="shield-checkmark-outline" label="Terms of service" testID="settings-terms" />
           </View>
 
+          <Pressable style={styles.logoutBtn} onPress={onLogout} testID="logout-button">
+            <Ionicons name="log-out-outline" size={20} color={theme.color.error} />
+            <Text style={styles.logoutText}>Sign out</Text>
+          </Pressable>
+
           <View style={styles.footer}>
             <VLogo size={40} />
             <Text style={styles.footerBrand}>DevicePulse v1.0.0</Text>
@@ -151,6 +180,14 @@ const styles = StyleSheet.create({
   navBadgeText: { color: theme.color.brand, fontSize: 10, fontWeight: '700' },
   familyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.color.border, padding: theme.space.md, marginBottom: theme.space.md },
   footer: { alignItems: 'center', marginTop: theme.space.xxl, gap: 6 },
+  profileCard: { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.md, borderWidth: 1, borderColor: theme.color.border, marginBottom: theme.space.md },
+  avatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: theme.color.brand3, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  avatarImg: { width: 52, height: 52 },
+  avatarInitial: { color: theme.color.brand, fontSize: 22, fontWeight: '800' },
+  profileName: { color: theme.color.onSurface, fontSize: 17, fontWeight: '700' },
+  profileEmail: { color: theme.color.onSurface2, fontSize: 13, marginTop: 2 },
+  logoutBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 52, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.error + '55', backgroundColor: theme.color.surface2, marginTop: theme.space.lg },
+  logoutText: { color: theme.color.error, fontSize: 15, fontWeight: '700' },
   footerBrand: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '600' },
   footerCorp: { color: theme.color.onSurface3, fontSize: 11 },
 });

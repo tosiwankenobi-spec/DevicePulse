@@ -18,7 +18,7 @@ export default function Trends() {
   useEffect(() => {
     (async () => {
       const id = await getDeviceId();
-      try { setData(await api.healthTrend(id)); } catch (e) { console.log(e); }
+      try { setData(await api.healthTrend()); } catch (e) { console.log(e); }
       finally { setLoading(false); }
     })();
   }, []);

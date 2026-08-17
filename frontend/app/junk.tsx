@@ -23,7 +23,7 @@ export default function Junk() {
     (async () => {
       const id = await getDeviceId();
       try {
-        const d = await api.cacheBreakdown(id);
+        const d = await api.cacheBreakdown();
         setData(d);
         const s: Record<string, boolean> = {};
         d.apps.forEach((a: any) => (s[a.id] = true));
@@ -40,7 +40,7 @@ export default function Junk() {
     setCleaning(true);
     try {
       const id = await getDeviceId();
-      await api.runClean({ categories: ['App cache'], reclaimable_mb: totalMb, device_id: id });
+      await api.runClean({ categories: ['App cache'], reclaimable_mb: totalMb });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setConfirmOpen(false);
       setDone(true);

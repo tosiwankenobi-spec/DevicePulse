@@ -6,7 +6,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '@/src/api';
-import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
 
 const OPTIONS = [
@@ -19,14 +18,11 @@ const OPTIONS = [
 export default function Reminders() {
   const router = useRouter();
   const [prefs, setPrefs] = useState<any>(null);
-  const [deviceId, setDeviceId] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
-      const id = await getDeviceId();
-      setDeviceId(id);
-      try { setPrefs(await api.getReminders(id)); } catch (e) { console.log(e); }
+      try { setPrefs(await api.getReminders()); } catch (e) { console.log(e); }
       finally { setLoading(false); }
     })();
   }, []);
@@ -36,7 +32,7 @@ export default function Reminders() {
     const next = { ...prefs, [key]: val };
     setPrefs(next);
     try {
-      await api.updateReminders(deviceId, {
+      await api.updateReminders({
         low_storage: next.low_storage,
         weekly_cleanup: next.weekly_cleanup,
         after_downloads: next.after_downloads,

@@ -34,7 +34,7 @@ export default function History() {
     (async () => {
       const id = await getDeviceId();
       try {
-        const [h, s] = await Promise.all([api.history(id), api.historySummary(id)]);
+        const [h, s] = await Promise.all([api.history(), api.historySummary()]);
         setItems(h);
         setSummary(s);
       } catch (e) { console.log(e); }

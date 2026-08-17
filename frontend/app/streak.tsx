@@ -25,7 +25,7 @@ export default function Streak() {
 
   const load = async () => {
     const id = await getDeviceId();
-    try { setData(await api.streak(id)); } catch (e) { console.log(e); }
+    try { setData(await api.streak()); } catch (e) { console.log(e); }
     finally { setLoading(false); }
   };
 
@@ -36,7 +36,7 @@ export default function Streak() {
     setFreezeMsg('');
     try {
       const id = await getDeviceId();
-      await api.useFreeze(id);
+      await api.useFreeze();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setFreezeMsg('❄️ Streak protected! Your last missed week is now covered.');
       await load();

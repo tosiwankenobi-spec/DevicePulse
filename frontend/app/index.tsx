@@ -1,42 +1,39 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Animated, { FadeIn, useSharedValue, useAnimatedStyle, withTiming, Easing } from 'react-native-reanimated';
 import { VLogo } from '@/src/components/VLogo';
+import { useAuth } from '@/src/AuthContext';
 import { theme } from '@/src/theme';
 
 export default function SplashRoute() {
   const router = useRouter();
+  const { user, loading } = useAuth();
   const scale = useSharedValue(0.7);
   const opacity = useSharedValue(0);
-  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     scale.value = withTiming(1, { duration: 900, easing: Easing.out(Easing.cubic) });
     opacity.value = withTiming(1, { duration: 800 });
-    const t = setTimeout(async () => {
-      const done = await AsyncStorage.getItem('dp:onboarded');
-      if (done === '1') router.replace('/(tabs)');
-      else router.replace('/onboarding');
-    }, 1900);
-    return () => clearTimeout(t);
   }, []);
 
-  const logoStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-    opacity: opacity.value,
-  }));
+  useEffect(() => {
+    if (loading) return;
+    (async () => {
+      const onboarded = await AsyncStorage.getItem('dp:onboarded');
+      if (onboarded !== '1') { router.replace('/onboarding'); return; }
+      if (user) router.replace('/(tabs)');
+      else router.replace('/login');
+    })();
+  }, [loading, user]);
+
+  const logoStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }], opacity: opacity.value }));
 
   return (
     <View style={styles.container} testID="splash-screen">
-      <LinearGradient
-        colors={theme.gradients.hero2}
-        style={StyleSheet.absoluteFill}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-      />
+      <LinearGradient colors={theme.gradients.hero2} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} />
       <Animated.View style={[styles.logo, logoStyle]}>
         <VLogo size={140} />
       </Animated.View>

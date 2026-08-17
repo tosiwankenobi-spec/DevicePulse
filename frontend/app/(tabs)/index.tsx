@@ -42,7 +42,7 @@ export default function Home() {
     } catch (e) { console.log(e); }
     try {
       const id = await getDeviceId();
-      const [s, f] = await Promise.all([api.streak(id), api.forecast(id)]);
+      const [s, f] = await Promise.all([api.streak(), api.forecast()]);
       setStreak(s.current_streak_weeks);
       setForecastDays(f.days_until_full);
     } catch (e) { console.log(e); }
@@ -67,7 +67,7 @@ export default function Home() {
 
   useEffect(() => { load(); }, []);
   useFocusEffect(React.useCallback(() => {
-    getDeviceId().then((id) => Promise.all([api.streak(id), api.forecast(id)]).then(([s, f]) => {
+    getDeviceId().then((id) => Promise.all([api.streak(), api.forecast()]).then(([s, f]) => {
       setStreak(s.current_streak_weeks);
       setForecastDays(f.days_until_full);
     }).catch(() => {}));

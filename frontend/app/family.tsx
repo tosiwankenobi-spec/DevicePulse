@@ -6,7 +6,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '@/src/api';
-import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
 
 const MAX = 5;
@@ -15,16 +14,13 @@ export default function Family() {
   const router = useRouter();
   const [members, setMembers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [deviceId, setDeviceId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [name, setName] = useState('');
   const [deviceType, setDeviceType] = useState<'phone' | 'tablet'>('phone');
   const [saving, setSaving] = useState(false);
 
   const load = async () => {
-    const id = await getDeviceId();
-    setDeviceId(id);
-    try { setMembers(await api.family(id)); } catch (e) { console.log(e); }
+    try { setMembers(await api.family()); } catch (e) { console.log(e); }
     finally { setLoading(false); }
   };
 
@@ -34,7 +30,7 @@ export default function Family() {
     if (!name.trim()) return;
     setSaving(true);
     try {
-      const m = await api.addMember(deviceId, { name: name.trim(), device_type: deviceType });
+      const m = await api.addMember({ name: name.trim(), device_type: deviceType });
       setMembers((prev) => [...prev, m]);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setName('');
@@ -47,7 +43,7 @@ export default function Family() {
   const remove = async (id: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setMembers((prev) => prev.filter((m) => m.id !== id));
-    try { await api.removeMember(deviceId, id); } catch (e) { console.log(e); }
+    try { await api.removeMember(id); } catch (e) { console.log(e); }
   };
 
   const slots = MAX - members.length - 1; // -1 for owner

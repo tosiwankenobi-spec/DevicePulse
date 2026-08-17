@@ -47,7 +47,7 @@ export default function Results() {
     try {
       const cats = CATS.filter(c => selected[c.key]).map(c => c.label);
       const id = await getDeviceId();
-      const res = await api.runClean({ categories: cats, reclaimable_mb: total, device_id: id });
+      const res = await api.runClean({ categories: cats, reclaimable_mb: total });
       setCleanedResult(res);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
@@ -156,7 +156,7 @@ const SuccessView = ({ data, onDone }: { data: any; onDone: () => void }) => {
     (async () => {
       try {
         const id = await getDeviceId();
-        const r = await api.referral(id);
+        const r = await api.referral();
         setReferralCode(r.code);
       } catch (e) { console.log(e); }
     })();

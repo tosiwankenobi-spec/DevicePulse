@@ -1,0 +1,40 @@
+{
+  "summary": "Backend + Frontend auth-gating and IDOR-fix verification for DevicePulse (Emergent Google Auth). Wrote /app/backend/tests/test_auth_and_scoping.py — 35 tests, ALL PASSED (100%). Verified: (1) 15 protected endpoints (auth/me, history, streak, forecast, device/health-trend, reminders GET/PUT, referral GET, referral/invite, streak/freeze, family GET, family/member POST, family/member DELETE, device/clean, device/cache-breakdown) all return 401 without a Bearer token; (2) POST /api/auth/session with bogus session_id returns 401 (Emergent auth service returned 401 as expected); (3) 7 public/simulated endpoints (device/health, storage, duplicates, large-files, battery, security, device/scan) remain OPEN (200) without a token; (4) Seeded a MongoDB user + user_sessions row directly and drove the full protected surface end-to-end — /auth/me returns the seeded user, /device/clean persists and is reflected in /history, family CRUD works, streak+freeze works (first 200, second same-month 400), forecast/health-trend/reminders/referral/cache-breakdown all 200 with the correct shape; (5) IDOR fix confirmed: user A's family member (name 'OnlyForA', id X) is NOT visible to user B's /family; user A's cleanup (reclaimed_mb=111.0) is NOT visible in user B's /history; user B calling DELETE /api/family/member/{X} does NOT delete user A's member (verified by follow-up GET as user A); (6) Expired session (expires_at in past) returns 401; (7) Malformed Authorization headers (missing Bearer prefix, unknown token) return 401. Frontend web preview verified with mobile viewport 390x844: /login renders login-screen and google-login-button with 'Continue with Google' text; navigating to /scan and /settings while unauthenticated redirects to /login (URL confirmed as /login). No React Native red screens. No deprecated Expo packages detected in server.py/AuthContext.tsx/login.tsx. No mocked APIs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_and_scoping.py",
+    "/app/test_reports/pytest/pytest_auth_results.xml",
+    "/app/backend/tests/backend_test.py"
+  ],
+  "action_items": [
+    "None required for this scope — auth gating, IDOR fix, expired-session handling, public endpoints, and frontend gating all pass. NOTE: the older /app/backend/tests/backend_test.py (from iteration_1) is now partially out of date — several of its tests (e.g. GET /streak/{dev}, POST /streak/{dev}/freeze, /referral/{dev}, /reminders/{dev}, /family/{dev}, /forecast/{dev}, /device/health-trend/{dev}, /device/cache-breakdown?device_id=x, /history?device_id=..., POST /device/clean without auth, family/{dev}/member) reference the pre-auth device_id-in-URL API and will now 404/401. Recommend the main agent either delete that legacy file or migrate its remaining unique assertions (SEC-001 rate limit, SEC-003 platform allowlist, family input validation, referral cap) into the new suite. The new /app/backend/tests/test_auth_and_scoping.py is the authoritative suite going forward."
+  ],
+  "critical_code_review_comments": [
+    "server.py DELETE /api/family/member/{id} returns 200 {\"removed\": id} even when the caller does not own the id (scoped delete_one silently matches 0). Consider returning 404 when delete_one().deleted_count == 0 so a caller can distinguish. Not a security issue (scoping prevents cross-user delete) but is misleading semantically.",
+   "server.py get_current_user rejects sessions on expiry, but the DB TTL index (expireAfterSeconds=0 on expires_at) will also purge them — good. Small nit: the TTL index requires expires_at stored as a BSON Date, not an ISO string; current code inserts datetime objects which is correct.",
+   "server.py POST /api/auth/logout doesn't require a valid session (no Depends(get_current_user)) — acceptable design (idempotent) but ensure the caller's client always clears the local token regardless of response.",
+   "server.py imports emergentintegrations at module load which will crash the whole app if the package is missing/misconfigured; consider lazy import inside /ai/recommendations.",
+   "server.py POST /api/device/scan persists to db.scans but is unauthenticated and un-scoped (any client can flood db.scans). Low risk given the payload is tiny, but consider auth-gating or capping."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auth_and_scoping.py (new — 35-test auth/IDOR/expiry pytest suite)"
+  ],
+  "success_rate": {
+    "backend": "100% (35/35 in test_auth_and_scoping.py)",
+    "frontend": "100% of gating checks (login screen renders; /scan and /settings both redirect to /login while unauthenticated)"
+  },
+  "seed_data_creation": "Each test fixture inserts a unique TEST_-prefixed user (users) + user_sessions row directly into MongoDB (DB from backend/.env DB_NAME), and cleans up (delete_many) all users/sessions/cleanups/referrals/reminders/freezes/family docs for that user_id after the test. The IDOR test seeds two independent users and cleans up both. The expired-session test seeds a session with expires_at = now - 1d and deletes it in a finally block. No global/shared seeds are written.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Auth is now Bearer-token based; no device_id in URLs/queries for per-user endpoints. To test protected endpoints without real Google OAuth, seed MongoDB directly (see /app/memory/test_credentials.md and the helpers in /app/backend/tests/test_auth_and_scoping.py::_seed_user_and_session). Backend on http://localhost:8001 (override with BACKEND_TEST_URL). Public endpoints (device/health, storage, duplicates, large-files, battery, security, scan, ai/recommendations) do NOT require auth. AI endpoint has a 10/min per-client-IP rate limit — do not burst it. Frontend web preview: root URL now hits /onboarding on first visit (localStorage-gated); /login is directly navigable and shows testID=login-screen + testID=google-login-button; any /(tabs)/* route redirects to /login while unauthenticated (verified with /scan and /settings). The old backend_test.py from iteration_1 references the pre-auth device_id-in-URL API and is stale — do not rely on it for auth-era regression.",
+  "rca_of_issue": "N/A — no failures. Emergent Google Auth integration (POST /auth/session ↔ demobackend.emergentagent.com/auth/v1/env/oauth/session-data), Bearer-token session validation, expiry check, per-user data scoping (IDOR fix), and frontend gate (AuthContext + (tabs)/_layout Redirect to /login) all behave as specified."
+}

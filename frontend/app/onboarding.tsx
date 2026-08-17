@@ -41,13 +41,13 @@ export default function Onboarding() {
       listRef.current?.scrollToOffset({ offset: next * width, animated: true });
     } else {
       await AsyncStorage.setItem('dp:onboarded', '1');
-      router.replace('/(tabs)');
+      router.replace('/login');
     }
   };
 
   const onSkip = async () => {
     await AsyncStorage.setItem('dp:onboarded', '1');
-    router.replace('/(tabs)');
+    router.replace('/login');
   };
 
   const onMomentumEnd = (e: any) => {

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Header, Depends
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,6 +6,7 @@ import os
 import logging
 import random
 import uuid
+import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -22,9 +23,39 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
+EMERGENT_AUTH_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+
+# ==================== Auth Models & Helpers ====================
+class SessionRequest(BaseModel):
+    session_id: str
+
+class UserPublic(BaseModel):
+    user_id: str
+    email: str
+    name: str
+    picture: Optional[str] = None
+
+async def get_current_user(authorization: Optional[str] = Header(default=None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.split(" ", 1)[1].strip()
+    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, datetime):
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=401, detail="Session expired")
+    user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
 
 
 # ==================== Models ====================
@@ -186,6 +217,63 @@ def _allow_ai_call(client_key: str) -> bool:
 async def root():
     return {"app": "DevicePulse", "version": "1.0.0"}
 
+# ---------- Auth ----------
+@api_router.post("/auth/session")
+async def create_session(body: SessionRequest):
+    session_id = body.session_id
+    try:
+        async with httpx.AsyncClient(timeout=15) as hc:
+            resp = await hc.get(EMERGENT_AUTH_URL, headers={"X-Session-ID": session_id})
+    except Exception:
+        raise HTTPException(status_code=401, detail="Auth service unavailable")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    data = resp.json()
+    email = data.get("email")
+    name = data.get("name") or (email.split("@")[0] if email else "User")
+    picture = data.get("picture")
+    session_token = data.get("session_token")
+    if not email or not session_token:
+        raise HTTPException(status_code=401, detail="Incomplete session data")
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one({"user_id": user_id}, {"$set": {"name": name, "picture": picture}})
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "picture": picture,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    await db.user_sessions.insert_one({
+        "session_token": session_token,
+        "user_id": user_id,
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
+    })
+
+    return {
+        "session_token": session_token,
+        "user": {"user_id": user_id, "email": email, "name": name, "picture": picture},
+    }
+
+@api_router.get("/auth/me", response_model=UserPublic)
+async def auth_me(user=Depends(get_current_user)):
+    return UserPublic(user_id=user["user_id"], email=user["email"], name=user["name"], picture=user.get("picture"))
+
+@api_router.post("/auth/logout")
+async def auth_logout(authorization: Optional[str] = Header(default=None)):
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        await db.user_sessions.delete_one({"session_token": token})
+    return {"ok": True}
+
+
 @api_router.get("/device/health", response_model=DeviceHealth)
 async def get_device_health():
     return _seed_health()
@@ -306,10 +394,10 @@ async def run_scan():
     return result
 
 @api_router.post("/device/clean")
-async def run_clean(req: CleanupRequest):
+async def run_clean(req: CleanupRequest, user=Depends(get_current_user)):
     doc = {
         "id": str(uuid.uuid4()),
-        "device_id": req.device_id or "anon",
+        "device_id": user["user_id"],
         "categories": req.categories,
         "reclaimed_mb": req.reclaimable_mb,
         "completed_at": datetime.now(timezone.utc).isoformat(),
@@ -324,7 +412,8 @@ async def run_clean(req: CleanupRequest):
     }
 
 @api_router.get("/history", response_model=List[HistoryEntry])
-async def get_history(device_id: str = "anon"):
+async def get_history(user=Depends(get_current_user)):
+    device_id = user["user_id"]
     docs = await db.cleanups.find({"device_id": device_id}).sort("completed_at", -1).to_list(100)
     return [
         HistoryEntry(
@@ -337,7 +426,8 @@ async def get_history(device_id: str = "anon"):
     ]
 
 @api_router.get("/history/summary")
-async def get_history_summary(device_id: str = "anon"):
+async def get_history_summary(user=Depends(get_current_user)):
+    device_id = user["user_id"]
     docs = await db.cleanups.find({"device_id": device_id}).to_list(1000)
     total_reclaimed = sum(d.get("reclaimed_mb", 0.0) for d in docs)
     return {
@@ -350,8 +440,9 @@ def _referral_code(device_id: str) -> str:
     seed = abs(hash(device_id)) % 100000
     return f"PULSE{seed:05d}"
 
-@api_router.get("/referral/{device_id}", response_model=ReferralStatus)
-async def get_referral(device_id: str):
+@api_router.get("/referral", response_model=ReferralStatus)
+async def get_referral(user=Depends(get_current_user)):
+    device_id = user["user_id"]
     doc = await db.referrals.find_one({"device_id": device_id})
     if not doc:
         doc = {
@@ -367,8 +458,9 @@ async def get_referral(device_id: str):
         reward_days=doc.get("invited_count", 0) * 7,
     )
 
-@api_router.post("/referral/{device_id}/invite", response_model=ReferralStatus)
-async def record_invite(device_id: str):
+@api_router.post("/referral/invite", response_model=ReferralStatus)
+async def record_invite(user=Depends(get_current_user)):
+    device_id = user["user_id"]
     doc = await db.referrals.find_one({"device_id": device_id})
     if not doc:
         doc = {"device_id": device_id, "code": _referral_code(device_id), "invited_count": 0}
@@ -382,8 +474,9 @@ async def record_invite(device_id: str):
         reward_days=new_count * 7,
     )
 
-@api_router.get("/reminders/{device_id}", response_model=ReminderPrefs)
-async def get_reminders(device_id: str):
+@api_router.get("/reminders", response_model=ReminderPrefs)
+async def get_reminders(user=Depends(get_current_user)):
+    device_id = user["user_id"]
     doc = await db.reminders.find_one({"device_id": device_id})
     if not doc:
         prefs = ReminderPrefs(device_id=device_id)
@@ -397,15 +490,17 @@ async def get_reminders(device_id: str):
         battery_alerts=doc.get("battery_alerts", False),
     )
 
-@api_router.put("/reminders/{device_id}", response_model=ReminderPrefs)
-async def update_reminders(device_id: str, prefs: ReminderPrefs):
+@api_router.put("/reminders", response_model=ReminderPrefs)
+async def update_reminders(prefs: ReminderPrefs, user=Depends(get_current_user)):
+    device_id = user["user_id"]
     data = prefs.dict()
     data["device_id"] = device_id
     await db.reminders.update_one({"device_id": device_id}, {"$set": data}, upsert=True)
     return ReminderPrefs(**data)
 
-@api_router.get("/streak/{device_id}")
-async def get_streak(device_id: str):
+@api_router.get("/streak")
+async def get_streak(user=Depends(get_current_user)):
+    device_id = user["user_id"]
     docs = await db.cleanups.find({"device_id": device_id}).sort("completed_at", -1).to_list(1000)
     total_cleanups = len(docs)
 
@@ -479,8 +574,9 @@ async def get_streak(device_id: str):
         "freezes_used": len([f for f in freeze_docs]),
     }
 
-@api_router.post("/streak/{device_id}/freeze")
-async def use_freeze(device_id: str):
+@api_router.post("/streak/freeze")
+async def use_freeze(user=Depends(get_current_user)):
+    device_id = user["user_id"]
     now = datetime.now(timezone.utc)
     cur_iso = now.isocalendar()
     cur_month = now.strftime("%Y-%m")
@@ -529,7 +625,7 @@ async def use_freeze(device_id: str):
     return {"frozen_week": doc["week_key"], "month_key": cur_month}
 
 @api_router.get("/device/cache-breakdown")
-async def get_cache_breakdown(device_id: str = "anon"):
+async def get_cache_breakdown(user=Depends(get_current_user)):
     apps = [
         {"app": "Instagram", "icon": "📷", "cache_mb": 342.6, "category": "Social"},
         {"app": "Chrome", "icon": "🌐", "cache_mb": 218.4, "category": "Browser"},
@@ -546,8 +642,9 @@ async def get_cache_breakdown(device_id: str = "anon"):
     total = round(sum(a["cache_mb"] for a in apps), 1)
     return {"total_mb": total, "apps": apps}
 
-@api_router.get("/device/health-trend/{device_id}")
-async def get_health_trend(device_id: str):
+@api_router.get("/device/health-trend")
+async def get_health_trend(user=Depends(get_current_user)):
+    device_id = user["user_id"]
     docs = await db.cleanups.find({"device_id": device_id}).to_list(1000)
     weeks_with = {}
     for d in docs:
@@ -588,8 +685,9 @@ async def get_health_trend(device_id: str):
         "current": last,
     }
 
-@api_router.get("/forecast/{device_id}")
-async def get_forecast(device_id: str):
+@api_router.get("/forecast")
+async def get_forecast(user=Depends(get_current_user)):
+    device_id = user["user_id"]
     total_gb = 128.0
     used_gb = 94.2  # seed baseline
 
@@ -624,16 +722,18 @@ async def get_forecast(device_id: str):
         "projection": projection,
     }
 
-@api_router.get("/family/{device_id}", response_model=List[FamilyMember])
-async def get_family(device_id: str):
+@api_router.get("/family", response_model=List[FamilyMember])
+async def get_family(user=Depends(get_current_user)):
+    device_id = user["user_id"]
     docs = await db.family.find({"owner_id": device_id}).sort("added_at", 1).to_list(50)
     return [
         FamilyMember(id=d["id"], name=d["name"], device_type=d["device_type"], added_at=d["added_at"])
         for d in docs
     ]
 
-@api_router.post("/family/{device_id}/member", response_model=FamilyMember)
-async def add_family_member(device_id: str, req: AddMemberRequest):
+@api_router.post("/family/member", response_model=FamilyMember)
+async def add_family_member(req: AddMemberRequest, user=Depends(get_current_user)):
+    device_id = user["user_id"]
     count = await db.family.count_documents({"owner_id": device_id})
     if count >= 5:
         raise HTTPException(400, "Family plan supports up to 5 devices")
@@ -651,8 +751,9 @@ async def add_family_member(device_id: str, req: AddMemberRequest):
     await db.family.insert_one(member.copy())
     return FamilyMember(id=member["id"], name=member["name"], device_type=member["device_type"], added_at=member["added_at"])
 
-@api_router.delete("/family/{device_id}/member/{member_id}")
-async def remove_family_member(device_id: str, member_id: str):
+@api_router.delete("/family/member/{member_id}")
+async def remove_family_member(member_id: str, user=Depends(get_current_user)):
+    device_id = user["user_id"]
     await db.family.delete_one({"owner_id": device_id, "id": member_id})
     return {"removed": member_id}
 
@@ -730,6 +831,17 @@ app.add_middleware(
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+@app.on_event("startup")
+async def create_indexes():
+    try:
+        await db.users.create_index("email", unique=True)
+        await db.users.create_index("user_id", unique=True)
+        await db.user_sessions.create_index("session_token", unique=True)
+        await db.user_sessions.create_index("user_id")
+        await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
+    except Exception:
+        logging.exception("Index creation failed")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

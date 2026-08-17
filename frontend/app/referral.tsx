@@ -20,7 +20,7 @@ export default function Referral() {
   const load = async () => {
     const id = await getDeviceId();
     setDeviceId(id);
-    try { setStatus(await api.referral(id)); } catch (e) { console.log(e); }
+    try { setStatus(await api.referral()); } catch (e) { console.log(e); }
     finally { setLoading(false); }
   };
 
@@ -33,7 +33,7 @@ export default function Referral() {
       await Share.share({
         message: `I'm keeping my phone fast with DevicePulse! Use my code ${status.code} and we both get a free week of Pro. Download: https://devicepulse.app`,
       });
-      const updated = await api.recordInvite(deviceId);
+      const updated = await api.recordInvite();
       setStatus(updated);
     } catch (e) { console.log(e); }
   };
