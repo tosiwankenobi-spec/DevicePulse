@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -162,6 +162,23 @@ def _seed_health() -> DeviceHealth:
         security_status="1 minor issue",
         issues_found=7,
     )
+
+
+# SEC-001: lightweight in-memory rate limiter for the paid LLM endpoint
+import time as _time
+_AI_CALLS: dict = {}
+_AI_WINDOW_SEC = 60
+_AI_MAX_PER_WINDOW = 10
+
+def _allow_ai_call(client_key: str) -> bool:
+    now = _time.time()
+    bucket = [t for t in _AI_CALLS.get(client_key, []) if now - t < _AI_WINDOW_SEC]
+    if len(bucket) >= _AI_MAX_PER_WINDOW:
+        _AI_CALLS[client_key] = bucket
+        return False
+    bucket.append(now)
+    _AI_CALLS[client_key] = bucket
+    return True
 
 
 # ==================== Routes ====================
@@ -356,7 +373,7 @@ async def record_invite(device_id: str):
     if not doc:
         doc = {"device_id": device_id, "code": _referral_code(device_id), "invited_count": 0}
         await db.referrals.insert_one(doc.copy())
-    new_count = doc.get("invited_count", 0) + 1
+    new_count = min(doc.get("invited_count", 0) + 1, 100)  # cap to prevent unbounded inflation
     await db.referrals.update_one({"device_id": device_id}, {"$set": {"invited_count": new_count}})
     return ReferralStatus(
         device_id=device_id,
@@ -620,11 +637,15 @@ async def add_family_member(device_id: str, req: AddMemberRequest):
     count = await db.family.count_documents({"owner_id": device_id})
     if count >= 5:
         raise HTTPException(400, "Family plan supports up to 5 devices")
+    name = (req.name or "").strip()[:40]  # cap length to prevent oversized input
+    if not name:
+        raise HTTPException(400, "Name is required")
+    device_type = req.device_type if req.device_type in ("phone", "tablet") else "phone"
     member = {
         "id": str(uuid.uuid4()),
         "owner_id": device_id,
-        "name": req.name,
-        "device_type": req.device_type,
+        "name": name,
+        "device_type": device_type,
         "added_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.family.insert_one(member.copy())
@@ -636,9 +657,17 @@ async def remove_family_member(device_id: str, member_id: str):
     return {"removed": member_id}
 
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
-async def get_ai_recommendations(req: RecommendationRequest):
+async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     if not EMERGENT_LLM_KEY:
         raise HTTPException(500, "LLM key not configured")
+
+    # SEC-001: simple per-client rate limit on the paid LLM endpoint
+    client_key = request.client.host if request.client else "unknown"
+    if not _allow_ai_call(client_key):
+        raise HTTPException(429, "Too many requests. Please wait a moment and try again.")
+
+    # SEC-003: treat platform as data, not prompt text (allowlist)
+    platform = req.platform if req.platform in ("android", "ios") else "android"
 
     system_message = (
         "You are DevicePulse AI, a professional device optimization assistant. "
@@ -656,7 +685,7 @@ async def get_ai_recommendations(req: RecommendationRequest):
         f"- Duplicate files: {req.duplicates_mb:.0f} MB\n"
         f"- Junk/cache: {req.junk_mb:.0f} MB\n"
         f"- Security threats: {req.threats}\n"
-        f"- Platform: {req.platform}\n\n"
+        f"- Platform: {platform}\n\n"
         f"Generate 4 recommendations as a JSON array."
     )
 
@@ -694,7 +723,7 @@ app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
