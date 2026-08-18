@@ -18,7 +18,8 @@
         "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.emergent.verolanepulse.e73nen"
+      "package": "ca.verolane.devicepulse",
+      "versionCode": 2
     },
     "web": {
       "bundler": "metro",
