@@ -11,7 +11,7 @@ This file is a memory aid for interacting with the user's RevenueCat account via
   - $rc_monthly -> prod0fdaac9c03  ($9.99 / P1M, trial: none)
   - $rc_annual  -> prod86399064b4  ($79.99 / P1Y, trial: P1W / 7-day free trial)
 - Dashboard: https://app.revenuecat.com/projects/proj6d262295
-- App identifiers (app.json): ios.bundleIdentifier = android.package = com.emergent.verolanepulse.e73nen
+- App identifiers: ios.bundleIdentifier = com.emergent.verolanepulse.e73nen ; android.package = ca.verolane.devicepulse (Play package updated 2026-08-18; RC Play app re-provisioned via /setup, SDK keys unchanged)
 
 ## Status check
 curl -sS -H "$AUTH" "$INTEGRATION_PROXY_URL/internal/revenuecat/projects/070d8d35-bc49-4ca1-adcf-136d3378f31a/status"
