@@ -42,7 +42,12 @@ const focusIcon: Record<string, keyof typeof Ionicons.glyphMap> = {
 export default function Coach() {
   const router = useRouter();
   const { isSubscribed } = useSubscription();
-  const chatUnlocked = isSubscribed || Platform.OS === 'web';
+  // Chat is a Pro feature. `__DEV__` is stripped to `false` in production
+  // builds (including a production web build), so this only unlocks chat
+  // for local/preview testing on web — never for real production users —
+  // unlike a blanket `Platform.OS === 'web'` check, which would leave the
+  // paywall bypassed for every real visitor on a live web deployment.
+  const chatUnlocked = isSubscribed || (__DEV__ && Platform.OS === 'web');
 
   const [daily, setDaily] = useState<Daily | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -182,13 +187,13 @@ export default function Coach() {
                           style={styles.chip}
                           testID={`coach-chip-${q}`}
                           onPress={() => { if (!chatUnlocked) { router.push('/paywall'); return; } setInput(q); }}
-                        >
-                          <Text style={styles.chipText}>{q}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
+                      >
+                        <Text style={styles.chipText}>{q}</Text>
+                      </Pressable>
+                    ))}
                   </View>
-                )}
+                </View>
+              )}
 
                 {messages.map((m, i) => (
                   <View
