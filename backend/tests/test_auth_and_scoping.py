@@ -100,6 +100,11 @@ PROTECTED = [
     ("GET", "/auth/sessions", None),
     ("POST", "/auth/sessions/does-not-exist/revoke", {}),
     ("DELETE", "/auth/account", None),
+    # AI Health Coach:
+    ("GET", "/coach/daily", None),
+    ("GET", "/coach/history", None),
+    ("DELETE", "/coach/history", None),
+    ("POST", "/coach/chat", {"message": "hi"}),
 ]
 
 PUBLIC = [
