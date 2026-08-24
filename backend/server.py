@@ -207,6 +207,26 @@ class AddMemberRequest(BaseModel):
     name: str
     device_type: str = "phone"
 
+class CoachChatRequest(BaseModel):
+    message: str
+    health_score: Optional[int] = None
+    storage_used_pct: Optional[float] = None
+    battery_health_pct: Optional[int] = None
+
+class CoachMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+    created_at: str
+
+class CoachDaily(BaseModel):
+    date: str
+    greeting: str
+    tip_title: str
+    tip_body: str
+    focus: str  # storage | battery | security | photos | general
+    action_label: str
+    action_route: str
+
 
 # ==================== Helpers ====================
 def _seed_health() -> DeviceHealth:
@@ -951,6 +971,192 @@ async def get_ai_recommendations(req: RecommendationRequest, request: Request):
             Recommendation(title="Optimize battery", description="Restrict background activity for high-drain apps to extend battery life.", impact="medium"),
             Recommendation(title="Review app permissions", description="Some apps have broader access than they need. A quick review improves privacy.", impact="low"),
         ]
+
+
+# ==================== AI Health Coach ====================
+async def _build_memory_context(user_id: str) -> str:
+    """Assemble a compact, personalized memory summary from the user's history."""
+    cleanups = await db.cleanups.find({"device_id": user_id}).sort("completed_at", -1).to_list(1000)
+    total_reclaimed = sum(d.get("reclaimed_mb", 0.0) for d in cleanups)
+    total_cleanups = len(cleanups)
+
+    # weekly streak
+    weeks_with = set()
+    last_cleanup_date = None
+    for d in cleanups:
+        try:
+            dt = datetime.fromisoformat(d["completed_at"])
+            iso = dt.isocalendar()
+            weeks_with.add((iso[0], iso[1]))
+            if last_cleanup_date is None:
+                last_cleanup_date = dt
+        except Exception:
+            pass
+
+    parts = [
+        f"- Total cleanups performed: {total_cleanups}",
+        f"- Lifetime space reclaimed: {total_reclaimed/1024:.2f} GB ({total_reclaimed:.0f} MB)",
+        f"- Weeks with at least one cleanup: {len(weeks_with)}",
+    ]
+    if last_cleanup_date:
+        days_ago = (datetime.now(timezone.utc) - last_cleanup_date.replace(tzinfo=timezone.utc)).days
+        parts.append(f"- Last cleanup: {days_ago} day(s) ago")
+        recent = cleanups[0]
+        parts.append(f"- Most recent cleanup freed {recent.get('reclaimed_mb', 0):.0f} MB from {', '.join(recent.get('categories', [])) or 'junk'}")
+    else:
+        parts.append("- No cleanups yet — this is a great time to start a healthy routine.")
+    return "\n".join(parts)
+
+
+@api_router.get("/coach/daily", response_model=CoachDaily)
+async def coach_daily(user=Depends(get_current_user)):
+    user_id = user["user_id"]
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    cached = await db.coach_daily.find_one({"user_id": user_id, "date": today}, {"_id": 0})
+    if cached:
+        return CoachDaily(**{k: v for k, v in cached.items() if k not in ("user_id",)})
+
+    name = (user.get("name") or "there").split(" ")[0]
+    memory = await _build_memory_context(user_id)
+
+    fallback = CoachDaily(
+        date=today,
+        greeting=f"Good to see you, {name} 👋",
+        tip_title="Run today's Pulse check",
+        tip_body="A quick Smart Scan keeps your device fast and clutter-free. Small daily habits prevent big slowdowns.",
+        focus="general",
+        action_label="Start Smart Scan",
+        action_route="/smart-scan",
+    )
+
+    if not EMERGENT_LLM_KEY:
+        doc = fallback.dict(); doc["user_id"] = user_id
+        await db.coach_daily.insert_one(doc.copy())
+        return fallback
+
+    system_message = (
+        "You are DevicePulse Coach, a warm, encouraging personal device-health assistant. "
+        "Using the user's history, produce ONE short daily coaching card. "
+        "Return ONLY valid JSON (no markdown/code fences) with keys: "
+        '{"greeting": "friendly 3-6 word greeting using their first name", '
+        '"tip_title": "punchy title max 6 words", '
+        '"tip_body": "1-2 warm, specific sentences referencing their history when relevant", '
+        '"focus": "one of storage|battery|security|photos|general", '
+        '"action_label": "2-3 word button text", '
+        '"action_route": "one of /smart-scan|/duplicates|/large-files|/junk|/insights"}. '
+        "Be positive and celebrate progress."
+    )
+    prompt = f"User's first name: {name}\nUser history:\n{memory}\n\nGenerate today's coaching card as JSON."
+
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"coach-daily-{uuid.uuid4()}",
+            system_message=system_message,
+        ).with_model("anthropic", "claude-sonnet-5")
+        response = await chat.send_message(UserMessage(text=prompt))
+        import json, re
+        text = response if isinstance(response, str) else str(response)
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
+        match = re.search(r"\{[\s\S]*\}", text)
+        data = json.loads(match.group(0))
+        allowed_focus = {"storage", "battery", "security", "photos", "general"}
+        allowed_routes = {"/smart-scan", "/duplicates", "/large-files", "/junk", "/insights"}
+        card = CoachDaily(
+            date=today,
+            greeting=str(data.get("greeting") or fallback.greeting)[:80],
+            tip_title=str(data.get("tip_title") or fallback.tip_title)[:60],
+            tip_body=str(data.get("tip_body") or fallback.tip_body)[:280],
+            focus=data.get("focus") if data.get("focus") in allowed_focus else "general",
+            action_label=str(data.get("action_label") or fallback.action_label)[:24],
+            action_route=data.get("action_route") if data.get("action_route") in allowed_routes else "/smart-scan",
+        )
+        doc = card.dict(); doc["user_id"] = user_id
+        await db.coach_daily.insert_one(doc.copy())
+        return card
+    except Exception:
+        logging.exception("Coach daily generation failed")
+        doc = fallback.dict(); doc["user_id"] = user_id
+        await db.coach_daily.insert_one(doc.copy())
+        return fallback
+
+
+@api_router.get("/coach/history", response_model=List[CoachMessage])
+async def coach_history(user=Depends(get_current_user)):
+    user_id = user["user_id"]
+    docs = await db.coach_messages.find({"user_id": user_id}).sort("created_at", 1).to_list(200)
+    return [CoachMessage(role=d["role"], content=d["content"], created_at=d["created_at"]) for d in docs]
+
+
+@api_router.delete("/coach/history")
+async def coach_clear(user=Depends(get_current_user)):
+    await db.coach_messages.delete_many({"user_id": user["user_id"]})
+    return {"cleared": True}
+
+
+@api_router.post("/coach/chat", response_model=CoachMessage)
+async def coach_chat(req: CoachChatRequest, request: Request, user=Depends(get_current_user)):
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(500, "LLM key not configured")
+
+    client_key = user["user_id"]
+    if not _allow_ai_call(client_key):
+        raise HTTPException(429, "Too many messages. Please wait a moment and try again.")
+
+    message = (req.message or "").strip()
+    if not message:
+        raise HTTPException(422, "Message cannot be empty")
+    message = message[:1000]
+
+    user_id = user["user_id"]
+    now = datetime.now(timezone.utc).isoformat()
+
+    # persist user message (memory)
+    await db.coach_messages.insert_one({"user_id": user_id, "role": "user", "content": message, "created_at": now})
+
+    memory = await _build_memory_context(user_id)
+    recent = await db.coach_messages.find({"user_id": user_id}).sort("created_at", -1).to_list(12)
+    recent = list(reversed(recent))
+    convo = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in recent[:-1])  # exclude current
+
+    live = []
+    if req.health_score is not None:
+        live.append(f"- Current health score: {req.health_score}/100")
+    if req.storage_used_pct is not None:
+        live.append(f"- Storage used: {req.storage_used_pct:.0f}%")
+    if req.battery_health_pct is not None:
+        live.append(f"- Battery health: {req.battery_health_pct}%")
+    live_ctx = "\n".join(live) if live else "- (no live device stats provided)"
+
+    system_message = (
+        "You are DevicePulse Coach, a friendly, knowledgeable personal device-health assistant inside the DevicePulse app. "
+        "You help users keep phones fast, clean, secure, and battery-healthy. "
+        "You remember the user's history and reference it naturally to feel personal and continuous. "
+        "Keep replies concise (2-4 sentences), warm, and actionable. Suggest concrete DevicePulse actions "
+        "(Smart Scan, duplicate cleanup, junk cleanup, large-file finder, battery insights) when relevant. "
+        "Never invent scary claims; the app simulates cleanup for safety. If asked about non-device topics, gently steer back.\n\n"
+        f"USER MEMORY (their history):\n{memory}\n\n"
+        f"LIVE DEVICE STATS:\n{live_ctx}\n\n"
+        f"RECENT CONVERSATION:\n{convo if convo else '(this is the first message)'}"
+    )
+
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"coach-{user_id}",
+            system_message=system_message,
+        ).with_model("anthropic", "claude-sonnet-5")
+        response = await chat.send_message(UserMessage(text=message))
+        reply = (response if isinstance(response, str) else str(response)).strip()
+    except Exception:
+        logging.exception("Coach chat failed")
+        reply = "I'm having trouble thinking right now. Try a Smart Scan in the meantime, and ask me again in a moment."
+
+    reply = reply[:1500]
+    reply_at = datetime.now(timezone.utc).isoformat()
+    await db.coach_messages.insert_one({"user_id": user_id, "role": "assistant", "content": reply, "created_at": reply_at})
+    return CoachMessage(role="assistant", content=reply, created_at=reply_at)
 
 
 app.include_router(api_router)

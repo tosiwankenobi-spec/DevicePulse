@@ -67,4 +67,11 @@ export const api = {
     req<any>('/family/member', { method: 'POST', body: JSON.stringify(body) }),
   removeMember: (memberId: string) =>
     req<any>(`/family/member/${memberId}`, { method: 'DELETE' }),
+
+  // AI Health Coach
+  coachDaily: () => req<any>('/coach/daily'),
+  coachHistory: () => req<any[]>('/coach/history'),
+  coachChat: (body: { message: string; health_score?: number; storage_used_pct?: number; battery_health_pct?: number }) =>
+    req<any>('/coach/chat', { method: 'POST', body: JSON.stringify(body) }),
+  clearCoach: () => req<any>('/coach/history', { method: 'DELETE' }),
 };
