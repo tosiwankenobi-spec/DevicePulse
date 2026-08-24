@@ -227,6 +227,16 @@ class CoachDaily(BaseModel):
     action_label: str
     action_route: str
 
+class PulseDaily(BaseModel):
+    date: str
+    score: int
+    status: str  # Excellent | Good | Needs Attention | Poor
+    headline: str
+    delta: int  # change vs yesterday's pulse score; 0 if no prior data
+    storage_used_pct: int
+    battery_pct: int
+    security_ok: bool
+
 
 # ==================== Helpers ====================
 def _seed_health() -> DeviceHealth:
@@ -241,6 +251,53 @@ def _seed_health() -> DeviceHealth:
         security_status="1 minor issue",
         issues_found=7,
     )
+
+
+def _compute_daily_pulse_score(cleanups: list) -> tuple:
+    """Deterministic, non-LLM health-score computation for the Daily Pulse Check
+    card. Rewards recent activity (cleaned up in the last 24h) and gently
+    penalizes long inactivity, anchored to the same baseline score used
+    elsewhere in the app (_seed_health)."""
+    now = datetime.now(timezone.utc)
+    last_cleanup_dt = None
+    cleanups_last_7d = 0
+    for d in cleanups:
+        try:
+            dt = datetime.fromisoformat(d["completed_at"])
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if last_cleanup_dt is None or dt > last_cleanup_dt:
+            last_cleanup_dt = dt
+        if (now - dt).days < 7:
+            cleanups_last_7d += 1
+
+    score = _seed_health().score + min(24, cleanups_last_7d * 6)
+    cleaned_last_24h = False
+    if last_cleanup_dt:
+        hours_since = (now - last_cleanup_dt).total_seconds() / 3600
+        if hours_since <= 24:
+            score += 5
+            cleaned_last_24h = True
+        elif hours_since > 24 * 7:
+            score -= 8
+    else:
+        score -= 5  # never cleaned up yet
+    score = max(40, min(97, score))
+    return score, cleaned_last_24h
+
+
+def _pulse_headline(score: int, cleaned_last_24h: bool, storage_pct: int) -> str:
+    if cleaned_last_24h:
+        return "Nice work — you cleaned up recently and it shows."
+    if score >= 85:
+        return "Your device is in great shape today."
+    if score >= 65:
+        if storage_pct >= 80:
+            return "Storage is getting tight — a quick scan would help."
+        return "Looking solid. A quick scan keeps it that way."
+    return "Your device could use some attention today."
 
 
 # SEC-001: lightweight in-memory rate limiter for the paid LLM endpoint
@@ -866,6 +923,57 @@ async def get_forecast(user=Depends(get_current_user)):
         "projected_full_date": projected_full.strftime("%b %d, %Y"),
         "projection": projection,
     }
+
+# ---------- Daily Pulse Check ----------
+# A lightweight, non-LLM "morning health score" — one glance, cached per
+# user per (UTC) day, same caching shape as /coach/daily. Deliberately has
+# no AI dependency: it should be fast and free to compute so it can run on
+# every app open without rate limits or an LLM key.
+@api_router.get("/pulse/daily", response_model=PulseDaily)
+async def pulse_daily(user=Depends(get_current_user)):
+    user_id = user["user_id"]
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    cached = await db.pulse_daily.find_one({"user_id": user_id, "date": today}, {"_id": 0})
+    if cached:
+        return PulseDaily(**{k: v for k, v in cached.items() if k not in ("user_id",)})
+
+    cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
+    score, cleaned_last_24h = _compute_daily_pulse_score(cleanups)
+
+    seed = _seed_health()
+    storage_pct = round(seed.storage_used_gb / seed.storage_total_gb * 100)
+    security_ok = "issue" not in seed.security_status.lower()
+
+    if score >= 85:
+        status = "Excellent"
+    elif score >= 65:
+        status = "Good"
+    elif score >= 50:
+        status = "Needs Attention"
+    else:
+        status = "Poor"
+
+    headline = _pulse_headline(score, cleaned_last_24h, storage_pct)
+
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    prev = await db.pulse_daily.find_one({"user_id": user_id, "date": yesterday}, {"_id": 0, "score": 1})
+    delta = (score - prev["score"]) if prev else 0
+
+    card = PulseDaily(
+        date=today,
+        score=score,
+        status=status,
+        headline=headline,
+        delta=delta,
+        storage_used_pct=storage_pct,
+        battery_pct=seed.battery_pct,
+        security_ok=security_ok,
+    )
+    doc = card.dict()
+    doc["user_id"] = user_id
+    await db.pulse_daily.insert_one(doc.copy())
+    return card
 
 @api_router.get("/family", response_model=List[FamilyMember])
 async def get_family(user=Depends(get_current_user)):
