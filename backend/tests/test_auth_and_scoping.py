@@ -107,6 +107,8 @@ PROTECTED = [
     ("POST", "/coach/chat", {"message": "hi"}),
     # Daily Pulse Check:
     ("GET", "/pulse/daily", None),
+    # Home Screen Widget (live):
+    ("GET", "/widget/summary", None),
 ]
 
 PUBLIC = [
