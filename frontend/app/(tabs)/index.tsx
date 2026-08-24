@@ -28,6 +28,17 @@ type Health = {
 
 type Rec = { title: string; description: string; impact: string };
 
+type Pulse = {
+  date: string;
+  score: number;
+  status: string;
+  headline: string;
+  delta: number;
+  storage_used_pct: number;
+  battery_pct: number;
+  security_ok: boolean;
+};
+
 export default function Home() {
   const router = useRouter();
   const { user, justLoggedIn, clearJustLoggedIn } = useAuth();
@@ -37,6 +48,7 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState(false);
   const [streak, setStreak] = useState<number | null>(null);
   const [forecastDays, setForecastDays] = useState<number | null>(null);
+  const [pulse, setPulse] = useState<Pulse | null>(null);
 
   const load = async () => {
     try {
@@ -45,9 +57,10 @@ export default function Home() {
     } catch (e) { console.log(e); }
     try {
       const id = await getDeviceId();
-      const [s, f] = await Promise.all([api.streak(), api.forecast()]);
+      const [s, f, p] = await Promise.all([api.streak(), api.forecast(), api.pulseDaily()]);
       setStreak(s.current_streak_weeks);
       setForecastDays(f.days_until_full);
+      setPulse(p);
     } catch (e) { console.log(e); }
   };
 
@@ -76,9 +89,10 @@ export default function Home() {
     }
   }, [justLoggedIn]);
   useFocusEffect(React.useCallback(() => {
-    getDeviceId().then((id) => Promise.all([api.streak(), api.forecast()]).then(([s, f]) => {
+    getDeviceId().then((id) => Promise.all([api.streak(), api.forecast(), api.pulseDaily()]).then(([s, f, p]) => {
       setStreak(s.current_streak_weeks);
       setForecastDays(f.days_until_full);
+      setPulse(p);
     }).catch(() => {}));
   }, []));
   useEffect(() => { if (health && !recs) loadRecs(health); }, [health]);
@@ -136,6 +150,39 @@ export default function Home() {
               </LinearGradient>
             </Pressable>
           </View>
+
+          {/* Daily Pulse Check — one-glance morning score, the daily ritual hook */}
+          {pulse && (
+            <Animated.View entering={FadeInDown}>
+              <Pressable style={styles.pulseCard} onPress={() => router.push('/trends')} testID="home-pulse-card">
+                <View style={styles.pulseIconWrap}>
+                  <Ionicons name="checkmark-circle" size={22} color={theme.color.brand} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={styles.pulseTitle}>Today&apos;s Pulse Check</Text>
+                    {pulse.delta !== 0 && (
+                      <View style={[styles.pulseDeltaPill, { backgroundColor: (pulse.delta > 0 ? theme.color.success : theme.color.error) + '22' }]}>
+                        <Ionicons
+                          name={pulse.delta > 0 ? 'arrow-up' : 'arrow-down'}
+                          size={10}
+                          color={pulse.delta > 0 ? theme.color.success : theme.color.error}
+                        />
+                        <Text style={[styles.pulseDeltaText, { color: pulse.delta > 0 ? theme.color.success : theme.color.error }]}>
+                          {Math.abs(pulse.delta)}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.pulseHeadline} numberOfLines={2}>{pulse.headline}</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={styles.pulseScore}>{pulse.score}</Text>
+                  <Text style={styles.pulseScoreLabel}>{pulse.status}</Text>
+                </View>
+              </Pressable>
+            </Animated.View>
+          )}
 
           {/* Welcome back banner */}
           {justLoggedIn && user && (
@@ -296,6 +343,14 @@ const styles = StyleSheet.create({
   quickIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   quickLabel: { color: theme.color.onSurface2, fontSize: 13, flex: 1 },
   quickValue: { color: theme.color.onSurface, fontSize: 18, fontWeight: '800' },
+  pulseCard: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: theme.space.lg, marginBottom: theme.space.sm, padding: theme.space.md, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.border },
+  pulseIconWrap: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(16,185,129,0.12)', alignItems: 'center', justifyContent: 'center' },
+  pulseTitle: { color: theme.color.onSurface, fontSize: 13, fontWeight: '700' },
+  pulseHeadline: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
+  pulseScore: { color: theme.color.onSurface, fontSize: 20, fontWeight: '800' },
+  pulseScoreLabel: { color: theme.color.onSurface3, fontSize: 10, marginTop: 1 },
+  pulseDeltaPill: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 6, paddingVertical: 2, borderRadius: theme.radius.pill },
+  pulseDeltaText: { fontSize: 10, fontWeight: '700' },
   welcomeBanner: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: theme.space.lg, marginBottom: theme.space.sm, padding: theme.space.md, backgroundColor: theme.color.brand3, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.brand + '55' },
   welcomeIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(16,185,129,0.18)', alignItems: 'center', justifyContent: 'center' },
   welcomeTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
