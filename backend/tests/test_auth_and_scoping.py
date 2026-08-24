@@ -105,6 +105,8 @@ PROTECTED = [
     ("GET", "/coach/history", None),
     ("DELETE", "/coach/history", None),
     ("POST", "/coach/chat", {"message": "hi"}),
+    # Daily Pulse Check:
+    ("GET", "/pulse/daily", None),
 ]
 
 PUBLIC = [
