@@ -237,6 +237,16 @@ class PulseDaily(BaseModel):
     battery_pct: int
     security_ok: bool
 
+class WidgetSummary(BaseModel):
+    score: int
+    status: str  # Excellent | Good | Needs Attention | Poor
+    storage_used_pct: int
+    storage_used_gb: float
+    storage_total_gb: float
+    battery_pct: int
+    security_ok: bool
+    updated_at: str  # ISO timestamp of this computation — proves the widget is live
+
 
 # ==================== Helpers ====================
 def _seed_health() -> DeviceHealth:
@@ -286,6 +296,19 @@ def _compute_daily_pulse_score(cleanups: list) -> tuple:
         score -= 5  # never cleaned up yet
     score = max(40, min(97, score))
     return score, cleaned_last_24h
+
+
+def _pulse_status_band(score: int) -> str:
+    """Shared score->status banding, used by both the Daily Pulse Check card
+    and the live Home Screen Widget summary so their labels always agree."""
+    if score >= 85:
+        return "Excellent"
+    elif score >= 65:
+        return "Good"
+    elif score >= 50:
+        return "Needs Attention"
+    else:
+        return "Poor"
 
 
 def _pulse_headline(score: int, cleaned_last_24h: bool, storage_pct: int) -> str:
@@ -945,15 +968,7 @@ async def pulse_daily(user=Depends(get_current_user)):
     storage_pct = round(seed.storage_used_gb / seed.storage_total_gb * 100)
     security_ok = "issue" not in seed.security_status.lower()
 
-    if score >= 85:
-        status = "Excellent"
-    elif score >= 65:
-        status = "Good"
-    elif score >= 50:
-        status = "Needs Attention"
-    else:
-        status = "Poor"
-
+    status = _pulse_status_band(score)
     headline = _pulse_headline(score, cleaned_last_24h, storage_pct)
 
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -974,6 +989,34 @@ async def pulse_daily(user=Depends(get_current_user)):
     doc["user_id"] = user_id
     await db.pulse_daily.insert_one(doc.copy())
     return card
+
+# ---------- Home Screen Widget (live) ----------
+# Backs the in-app widget preview (and, once a native build exists, the real
+# iOS/Android home-screen widget extension) with an actual live snapshot.
+# Unlike /pulse/daily this is intentionally NOT cached per day: every call
+# recomputes from current cleanup history and "now", so the score/labels
+# genuinely move in real time (e.g. right after a cleanup) rather than
+# waiting for the next calendar day like the once-daily Pulse Check card.
+@api_router.get("/widget/summary", response_model=WidgetSummary)
+async def widget_summary(user=Depends(get_current_user)):
+    user_id = user["user_id"]
+    cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
+    score, _cleaned_last_24h = _compute_daily_pulse_score(cleanups)
+
+    seed = _seed_health()
+    storage_pct = round(seed.storage_used_gb / seed.storage_total_gb * 100)
+    security_ok = "issue" not in seed.security_status.lower()
+
+    return WidgetSummary(
+        score=score,
+        status=_pulse_status_band(score),
+        storage_used_pct=storage_pct,
+        storage_used_gb=seed.storage_used_gb,
+        storage_total_gb=seed.storage_total_gb,
+        battery_pct=seed.battery_pct,
+        security_ok=security_ok,
+        updated_at=datetime.now(timezone.utc).isoformat(),
+    )
 
 @api_router.get("/family", response_model=List[FamilyMember])
 async def get_family(user=Depends(get_current_user)):
