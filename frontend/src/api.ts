@@ -49,6 +49,7 @@ export const api = {
     req<any>('/device/duplicates/remove', { method: 'POST', body: JSON.stringify({ group_ids: groupIds }) }),
   largeFiles: () => req<any[]>('/device/large-files'),
   battery: () => req<any>('/device/battery'),
+  optimizeBattery: () => req<any>('/device/battery/optimize', { method: 'POST' }),
   security: () => req<any>('/device/security'),
   scanSecurity: () => req<any>('/device/security/scan', { method: 'POST' }),
   resolveSecurityFinding: (id: string) => req<any>(`/device/security/findings/${id}/resolve`, { method: 'POST' }),
