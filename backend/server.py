@@ -112,12 +112,26 @@ class StorageAnalysis(BaseModel):
     free_gb: float
     breakdown: List[StorageBreakdown]
 
-class DuplicateGroup(BaseModel):
+class DuplicateGroupOut(BaseModel):
     id: str
-    count: int
+    photo_count: int
     size_mb: float
     thumbnail_url: str
     taken_at: str
+    ai_label: str          # "Exact duplicate" | "Burst photo" | "Similar photo"
+    ai_confidence: int     # 0-100
+
+class DuplicateScanResult(BaseModel):
+    new_groups_found: int
+    groups: List[DuplicateGroupOut]
+
+class DuplicateRemoveRequest(BaseModel):
+    group_ids: List[str]
+
+class DuplicateRemoveResult(BaseModel):
+    removed_count: int
+    freed_mb: float
+    groups: List[DuplicateGroupOut]
 
 class LargeFile(BaseModel):
     id: str
@@ -576,6 +590,7 @@ async def delete_account(user=Depends(get_current_user)):
     await db.freezes.delete_many({"device_id": uid})
     await db.cleanup_reports.delete_many({"user_id": uid})
     await db.autoclean_schedules.delete_many({"user_id": uid})
+    await db.duplicate_groups.delete_many({"user_id": uid})
     await _leave_family_group(uid)
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
@@ -660,27 +675,6 @@ async def get_storage_analysis():
         free_gb=128.0 - sum(b.size_gb for b in breakdown),
         breakdown=breakdown,
     )
-
-@api_router.get("/device/duplicates", response_model=List[DuplicateGroup])
-async def get_duplicates():
-    thumbs = [
-        "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=400",
-        "https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=400",
-        "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?w=400",
-        "https://images.unsplash.com/photo-1519681393784-d120267933ba?w=400",
-        "https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=400",
-        "https://images.unsplash.com/photo-1449824913935-59a10b8d2000?w=400",
-    ]
-    groups = []
-    for i, url in enumerate(thumbs):
-        groups.append(DuplicateGroup(
-            id=str(uuid.uuid4()),
-            count=random.randint(2, 5),
-            size_mb=round(random.uniform(4.5, 42.0), 1),
-            thumbnail_url=url,
-            taken_at=f"2025-{random.randint(1,12):02d}-{random.randint(1,28):02d}",
-        ))
-    return groups
 
 @api_router.get("/device/large-files", response_model=List[LargeFile])
 async def get_large_files():
@@ -1846,6 +1840,146 @@ async def run_autoclean_if_due(user=Depends(get_current_user)):
     return AutoCleanRunResult(ran=True, reclaimed_mb=reclaimed_mb, categories=categories)
 
 
+# ==================== Duplicate Photo AI ====================
+# The old GET /device/duplicates was unauthenticated and returned a fresh
+# random batch of fake groups on every single call (random count/size, fixed
+# stock photo URLs) — nothing was per-user, nothing persisted, and the old
+# "Remove" button in the app never called the backend at all. This section
+# replaces it with real per-user, persisted duplicate groups: an "AI" label +
+# confidence score per group (deterministic classification, not an LLM call —
+# consistent with every other "AI" feature in this app, e.g. Smart Nudges and
+# Predictive Storage), and removing a group actually deletes it from the
+# user's pending list and records a real cleanup that feeds streak/forecast/
+# cleanup-report/coach-insights exactly like any other cleanup action.
+DUPLICATE_THUMBS = [
+    "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=400",
+    "https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=400",
+    "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?w=400",
+    "https://images.unsplash.com/photo-1519681393784-d120267933ba?w=400",
+    "https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=400",
+    "https://images.unsplash.com/photo-1449824913935-59a10b8d2000?w=400",
+]
+DUPLICATE_LABELS = ["Exact duplicate", "Burst photo", "Similar photo"]
+DUPLICATE_LABEL_WEIGHTS = [0.5, 0.3, 0.2]
+DUPLICATE_CONFIDENCE_RANGES = {
+    "Exact duplicate": (94, 99),
+    "Burst photo": (78, 92),
+    "Similar photo": (62, 80),
+}
+# "Unlimited duplicate cleanup" is a Pro perk paywall.tsx has advertised since
+# before this session, with nothing backing it — the same shape of gap Auto-
+# Clean Scheduling closed for "Scheduled cleanups." Free users can remove a
+# capped number of duplicate groups per UTC day; Pro users (checked via the
+# same stored is_pro flag) are unlimited.
+FREE_DUPLICATE_REMOVE_DAILY_LIMIT = 3
+
+
+def _make_duplicate_group(user_id: str) -> dict:
+    label = random.choices(DUPLICATE_LABELS, weights=DUPLICATE_LABEL_WEIGHTS, k=1)[0]
+    lo, hi = DUPLICATE_CONFIDENCE_RANGES[label]
+    return {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "photo_count": random.randint(2, 6),
+        "size_mb": round(random.uniform(4.5, 48.0), 1),
+        "thumbnail_url": random.choice(DUPLICATE_THUMBS),
+        "taken_at": f"2025-{random.randint(1,12):02d}-{random.randint(1,28):02d}",
+        "ai_label": label,
+        "ai_confidence": random.randint(lo, hi),
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "removed_at": None,
+    }
+
+
+def _duplicate_group_out(d: dict) -> DuplicateGroupOut:
+    return DuplicateGroupOut(
+        id=d["id"], photo_count=d["photo_count"], size_mb=d["size_mb"],
+        thumbnail_url=d["thumbnail_url"], taken_at=d["taken_at"],
+        ai_label=d["ai_label"], ai_confidence=d["ai_confidence"],
+    )
+
+
+@api_router.get("/device/duplicates", response_model=List[DuplicateGroupOut])
+async def get_duplicate_groups(user=Depends(get_current_user)):
+    """Generates a user's initial AI-scanned duplicate groups once, lazily,
+    on first read, and persists them — so unlike the old endpoint, revisiting
+    this screen shows the same groups instead of a freshly-randomized set."""
+    uid = user["user_id"]
+    existing = await db.duplicate_groups.count_documents({"user_id": uid})
+    if existing == 0:
+        initial = [_make_duplicate_group(uid) for _ in range(random.randint(5, 7))]
+        await db.duplicate_groups.insert_many([g.copy() for g in initial])
+    docs = await db.duplicate_groups.find({"user_id": uid, "status": "pending"}).sort("size_mb", -1).to_list(200)
+    return [_duplicate_group_out(d) for d in docs]
+
+
+@api_router.post("/device/duplicates/scan", response_model=DuplicateScanResult)
+async def scan_duplicate_groups(user=Depends(get_current_user)):
+    """Runs another AI scan, simulating newly-taken duplicate/burst photos
+    found since the last scan — appends to (never replaces) the pending list."""
+    uid = user["user_id"]
+    new_groups = [_make_duplicate_group(uid) for _ in range(random.randint(1, 3))]
+    await db.duplicate_groups.insert_many([g.copy() for g in new_groups])
+    docs = await db.duplicate_groups.find({"user_id": uid, "status": "pending"}).sort("size_mb", -1).to_list(200)
+    return DuplicateScanResult(new_groups_found=len(new_groups), groups=[_duplicate_group_out(d) for d in docs])
+
+
+@api_router.post("/device/duplicates/remove", response_model=DuplicateRemoveResult)
+async def remove_duplicate_groups(req: DuplicateRemoveRequest, user=Depends(get_current_user)):
+    uid = user["user_id"]
+    if not req.group_ids:
+        raise HTTPException(400, "group_ids is required")
+
+    docs = await db.duplicate_groups.find({
+        "id": {"$in": req.group_ids}, "user_id": uid, "status": "pending",
+    }).to_list(len(req.group_ids))
+    found_ids = {d["id"] for d in docs}
+    missing = [gid for gid in req.group_ids if gid not in found_ids]
+    if missing:
+        raise HTTPException(404, f"Unknown or already-removed group id(s): {', '.join(missing)}")
+
+    if not user.get("is_pro", False):
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        removed_docs = await db.duplicate_groups.find({"user_id": uid, "status": "removed"}).to_list(1000)
+        removed_today = 0
+        for d in removed_docs:
+            try:
+                dt = datetime.fromisoformat(d["removed_at"])
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt >= today_start:
+                    removed_today += 1
+            except Exception:
+                continue
+        if removed_today + len(docs) > FREE_DUPLICATE_REMOVE_DAILY_LIMIT:
+            raise HTTPException(
+                403,
+                f"Free plan allows removing {FREE_DUPLICATE_REMOVE_DAILY_LIMIT} duplicate groups per day. "
+                f"Upgrade to Pro for unlimited duplicate cleanup.",
+            )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    freed_mb = round(sum(d["size_mb"] for d in docs), 1)
+    await db.duplicate_groups.update_many(
+        {"id": {"$in": list(found_ids)}, "user_id": uid},
+        {"$set": {"status": "removed", "removed_at": now_iso}},
+    )
+    if freed_mb > 0:
+        await db.cleanups.insert_one({
+            "id": str(uuid.uuid4()),
+            "device_id": uid,
+            "categories": ["Duplicates"],
+            "reclaimed_mb": freed_mb,
+            "completed_at": now_iso,
+        })
+    remaining = await db.duplicate_groups.find({"user_id": uid, "status": "pending"}).sort("size_mb", -1).to_list(200)
+    return DuplicateRemoveResult(
+        removed_count=len(docs), freed_mb=freed_mb, groups=[_duplicate_group_out(d) for d in remaining],
+    )
+
+
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     if not EMERGENT_LLM_KEY:
@@ -2244,6 +2378,8 @@ async def create_indexes():
         await db.cleanup_reports.create_index("share_code", unique=True)
         await db.cleanup_reports.create_index("user_id")
         await db.autoclean_schedules.create_index("user_id", unique=True)
+        await db.duplicate_groups.create_index("user_id")
+        await db.duplicate_groups.create_index([("user_id", 1), ("status", 1)])
     except Exception:
         logging.exception("Index creation failed")
 
