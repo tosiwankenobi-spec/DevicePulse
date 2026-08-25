@@ -112,6 +112,9 @@ PROTECTED = [
     # Smart Nudges:
     ("GET", "/nudges/active", None),
     ("POST", "/nudges/storage_reclaim/dismiss", None),
+    # AI Health Coach upgrade (learned patterns + win celebrations):
+    ("GET", "/coach/insights", None),
+    ("POST", "/coach/insights/win_first_clean/ack", None),
 ]
 
 PUBLIC = [
