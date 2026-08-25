@@ -44,6 +44,9 @@ export const api = {
   health: () => req<any>('/device/health'),
   storage: () => req<any>('/device/storage'),
   duplicates: () => req<any[]>('/device/duplicates'),
+  scanDuplicates: () => req<any>('/device/duplicates/scan', { method: 'POST' }),
+  removeDuplicates: (groupIds: string[]) =>
+    req<any>('/device/duplicates/remove', { method: 'POST', body: JSON.stringify({ group_ids: groupIds }) }),
   largeFiles: () => req<any[]>('/device/large-files'),
   battery: () => req<any>('/device/battery'),
   security: () => req<any>('/device/security'),
