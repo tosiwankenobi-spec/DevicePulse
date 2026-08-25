@@ -60,6 +60,7 @@ export default function Home() {
   const [pulse, setPulse] = useState<Pulse | null>(null);
   const [nudge, setNudge] = useState<Nudge | null>(null);
   const [dismissingNudge, setDismissingNudge] = useState(false);
+  const [fixingNudge, setFixingNudge] = useState(false);
 
   const load = async () => {
     try {
@@ -87,6 +88,29 @@ export default function Home() {
       console.log(e);
     } finally {
       setDismissingNudge(false);
+    }
+  };
+
+  // Predictive Storage's "one-tap fix": tapping the storage_forecast nudge
+  // runs the fix immediately instead of just navigating to the Forecast
+  // screen — that's what makes it genuinely one tap.
+  const onNudgePress = async () => {
+    if (!nudge) return;
+    if (nudge.type !== 'storage_forecast') {
+      router.push(nudge.cta_route as any);
+      return;
+    }
+    if (fixingNudge) return;
+    setFixingNudge(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    try {
+      const result = await api.forecastQuickFix();
+      setNudge(null);
+      if (result?.forecast?.days_until_full != null) setForecastDays(result.forecast.days_until_full);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setFixingNudge(false);
     }
   };
 
@@ -252,15 +276,22 @@ export default function Home() {
             <Animated.View entering={FadeInDown}>
               <Pressable
                 style={styles.reminderBanner}
-                onPress={() => router.push(nudge.cta_route as any)}
+                onPress={onNudgePress}
+                disabled={fixingNudge}
                 testID="home-nudge-banner"
               >
                 <View style={styles.reminderIcon}>
-                  <Ionicons name="notifications" size={18} color={theme.color.warning} />
+                  {fixingNudge ? (
+                    <ActivityIndicator size="small" color={theme.color.warning} />
+                  ) : (
+                    <Ionicons name="notifications" size={18} color={theme.color.warning} />
+                  )}
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.reminderTitle}>{nudge.title}</Text>
-                  <Text style={styles.reminderBody}>{nudge.message}</Text>
+                  <Text style={styles.reminderBody}>
+                    {fixingNudge ? 'Fixing now…' : nudge.message}
+                  </Text>
                 </View>
                 <Pressable onPress={onDismissNudge} hitSlop={10} testID="home-nudge-dismiss">
                   <Ionicons name="close" size={18} color={theme.color.onSurface3} />
