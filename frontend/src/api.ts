@@ -62,6 +62,7 @@ export const api = {
   cacheBreakdown: () => req<any>('/device/cache-breakdown'),
   healthTrend: () => req<any>('/device/health-trend'),
   forecast: () => req<any>('/forecast'),
+  forecastQuickFix: () => req<any>('/forecast/quick-fix', { method: 'POST' }),
   pulseDaily: () => req<any>('/pulse/daily'),
   widgetSummary: () => req<any>('/widget/summary'),
   activeNudge: () => req<any>('/nudges/active'),
