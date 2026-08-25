@@ -13,7 +13,6 @@ import { theme } from '@/src/theme';
 export default function Settings() {
   const router = useRouter();
   const { user, logout } = useAuth();
-  const [autoScan, setAutoScan] = React.useState(true);
   const [haptics, setHaptics] = React.useState(true);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
@@ -109,14 +108,12 @@ export default function Settings() {
             <NavRow icon="grid-outline" label="Home screen widget" onPress={() => router.push('/widget-preview')} testID="settings-widget" />
             <Divider />
             <NavRow icon="share-social-outline" label="Cleanup report" onPress={() => router.push('/cleanup-report')} testID="settings-cleanup-report" />
+            <Divider />
+            <NavRow icon="time-outline" label="Auto-Clean scheduling" badge="Pro" onPress={() => router.push('/autoclean')} testID="settings-autoclean" />
           </View>
 
           <Text style={styles.section}>Preferences</Text>
           <View style={styles.card}>
-            <Row icon="scan-outline" label="Auto smart scan" desc="Weekly on Sunday">
-              <Switch value={autoScan} onValueChange={setAutoScan} trackColor={{ true: theme.color.brand, false: theme.color.border }} thumbColor="#fff" testID="toggle-auto-scan" />
-            </Row>
-            <Divider />
             <NavRow icon="notifications-outline" label="Smart reminders" onPress={() => router.push('/reminders')} testID="settings-reminders" />
             <Divider />
             <NavRow icon="paper-plane-outline" label="Send test notification" onPress={onTestPush} testID="settings-test-push" />
