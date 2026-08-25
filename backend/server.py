@@ -149,19 +149,26 @@ class BatteryInsight(BaseModel):
     time_to_empty_hours: float
     drain_apps: List[dict]
 
-class SecurityThreat(BaseModel):
+class SecurityFinding(BaseModel):
     id: str
-    severity: str  # low, medium, high
+    source: str             # "session" | "device"
+    severity: str            # low, medium, high
+    category: str             # session, permission, network, backup, app
     title: str
     description: str
-    category: str  # malware, permission, network, privacy
+    action: Optional[str] = None         # "revoke_session" | "resolve" | None
+    session_sid: Optional[str] = None    # set when source == "session"
 
-class SecurityScan(BaseModel):
+class SecurityScanOut(BaseModel):
     status: str  # safe, at_risk
     last_scan_iso: str
-    threats: List[SecurityThreat]
     apps_scanned: int
     permissions_reviewed: int
+    findings: List[SecurityFinding]
+
+class SecurityScanResult(BaseModel):
+    new_findings_found: int
+    scan: SecurityScanOut
 
 class ScanResult(BaseModel):
     id: str
@@ -591,6 +598,8 @@ async def delete_account(user=Depends(get_current_user)):
     await db.cleanup_reports.delete_many({"user_id": uid})
     await db.autoclean_schedules.delete_many({"user_id": uid})
     await db.duplicate_groups.delete_many({"user_id": uid})
+    await db.security_findings.delete_many({"user_id": uid})
+    await db.security_scan_state.delete_many({"user_id": uid})
     await _leave_family_group(uid)
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
@@ -710,25 +719,6 @@ async def get_battery():
             {"name": "Spotify", "pct": 9, "icon": "🎵"},
             {"name": "WhatsApp", "pct": 6, "icon": "💬"},
         ],
-    )
-
-@api_router.get("/device/security", response_model=SecurityScan)
-async def get_security():
-    threats = [
-        SecurityThreat(
-            id=str(uuid.uuid4()),
-            severity="low",
-            title="Excessive permissions detected",
-            description="2 apps have access to your location while running in background.",
-            category="permission",
-        ),
-    ]
-    return SecurityScan(
-        status="safe",
-        last_scan_iso=datetime.now(timezone.utc).isoformat(),
-        threats=threats,
-        apps_scanned=147,
-        permissions_reviewed=328,
     )
 
 @api_router.post("/device/scan", response_model=ScanResult)
@@ -1980,6 +1970,182 @@ async def remove_duplicate_groups(req: DuplicateRemoveRequest, user=Depends(get_
     )
 
 
+# ==================== Security (real account signals) ====================
+# The old GET /device/security was unauthenticated, took no user, and always
+# returned the exact same single hardcoded finding with status hardcoded to
+# "safe" regardless — nothing was per-user, nothing was actionable, and the
+# status text didn't even agree with the one threat being shown.
+#
+# Scoped explicitly via AskUserQuestion to real account signals only (no
+# external breach-check service, to avoid sending user emails to a third
+# party): this app already has genuine per-user session data (db.user_sessions,
+# already exposed read-only via GET /auth/sessions) that's a real security
+# signal never surfaced as one. Every OTHER concurrent sign-in is now a real,
+# actionable finding — computed live from that real data, never persisted,
+# so it's always exactly current — with a one-tap revoke wired straight to
+# the existing POST /auth/sessions/{sid}/revoke. Device-level findings
+# (permissions, backups, network, app hygiene) stay simulated, same honest
+# framing as the rest of this app's device layer, but — like Duplicate Photo
+# AI before it — are now persisted per user and dismissible instead of a
+# single fact fabricated fresh on every call.
+SECURITY_FINDING_POOL = [
+    {"key": "excessive_permissions", "category": "permission", "severity": "low",
+     "title": "Excessive permissions detected",
+     "description": "2 apps have access to your location while running in background."},
+    {"key": "camera_background", "category": "permission", "severity": "medium",
+     "title": "Camera access outside app use",
+     "description": "1 app can access your camera even when it isn't open."},
+    {"key": "unencrypted_backup", "category": "backup", "severity": "medium",
+     "title": "Unencrypted local backup found",
+     "description": "A local backup isn't encrypted — anyone with file access could read it."},
+    {"key": "outdated_app", "category": "app", "severity": "low",
+     "title": "Outdated app version detected",
+     "description": "1 installed app hasn't been updated in over 6 months and may carry known vulnerabilities."},
+    {"key": "open_wifi", "category": "network", "severity": "high",
+     "title": "Unsecured Wi-Fi network used recently",
+     "description": "Your device recently connected to an open network with no encryption."},
+]
+SECURITY_SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+
+def _pick_new_security_findings(existing_open_keys: set, max_new: int) -> list:
+    """A previously-resolved finding is allowed to reappear on a later scan
+    (a real scanner can flag the same category of issue again) — only
+    currently-OPEN keys are excluded from the candidate pool."""
+    candidates = [f for f in SECURITY_FINDING_POOL if f["key"] not in existing_open_keys]
+    if not candidates or max_new <= 0:
+        return []
+    random.shuffle(candidates)
+    n = random.randint(0, min(max_new, len(candidates)))
+    return candidates[:n]
+
+
+async def _real_session_findings(user_id: str, current_token: str) -> list:
+    """Every OTHER active session is a real, verifiable, actionable security
+    signal — computed live from db.user_sessions (never persisted, so it's
+    always exactly current; naturally disappears once revoked)."""
+    docs = await db.user_sessions.find({"user_id": user_id}).sort("created_at", -1).to_list(50)
+    other_sessions = [d for d in docs if d.get("session_token") != current_token and d.get("sid")]
+    if not other_sessions:
+        return []
+    severity = "medium" if len(docs) >= 4 else "low"
+    findings = []
+    for d in other_sessions:
+        created = d.get("created_at")
+        created_iso = created.isoformat() if isinstance(created, datetime) else str(created)
+        findings.append({
+            "id": f"session-{d['sid']}",
+            "source": "session",
+            "severity": severity,
+            "category": "session",
+            "title": "Active sign-in on another device",
+            "description": f"Signed in since {created_iso[:10]}. If this wasn't you, revoke it now.",
+            "action": "revoke_session",
+            "session_sid": d["sid"],
+        })
+    return findings
+
+
+def _security_status(findings: list) -> str:
+    return "at_risk" if any(f["severity"] in ("medium", "high") for f in findings) else "safe"
+
+
+def _security_finding_out(f: dict) -> SecurityFinding:
+    return SecurityFinding(
+        id=f["id"], source=f["source"], severity=f["severity"], category=f["category"],
+        title=f["title"], description=f["description"],
+        action=f.get("action"), session_sid=f.get("session_sid"),
+    )
+
+
+async def _build_security_scan(user_id: str, current_token: str) -> SecurityScanOut:
+    device_docs = await db.security_findings.find({"user_id": user_id, "status": "open"}).to_list(50)
+    device_findings = [
+        {"id": d["id"], "source": "device", "severity": d["severity"], "category": d["category"],
+         "title": d["title"], "description": d["description"], "action": "resolve"}
+        for d in device_docs
+    ]
+    session_findings = await _real_session_findings(user_id, current_token)
+    all_findings = session_findings + device_findings
+    all_findings.sort(key=lambda f: SECURITY_SEVERITY_ORDER.get(f["severity"], 3))
+
+    state = await db.security_scan_state.find_one({"user_id": user_id}, {"_id": 0})
+    return SecurityScanOut(
+        status=_security_status(all_findings),
+        last_scan_iso=(state or {}).get("last_scan_at", datetime.now(timezone.utc).isoformat()),
+        apps_scanned=(state or {}).get("apps_scanned", 0),
+        permissions_reviewed=(state or {}).get("permissions_reviewed", 0),
+        findings=[_security_finding_out(f) for f in all_findings],
+    )
+
+
+@api_router.get("/device/security", response_model=SecurityScanOut)
+async def get_security(user=Depends(get_current_user), authorization: Optional[str] = Header(default=None)):
+    uid = user["user_id"]
+    cur_token = authorization.split(" ", 1)[1].strip() if authorization and authorization.startswith("Bearer ") else ""
+
+    state = await db.security_scan_state.find_one({"user_id": uid})
+    if not state:
+        initial = _pick_new_security_findings(set(), max_new=2)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if initial:
+            docs = [{
+                "id": str(uuid.uuid4()), "user_id": uid, "key": f["key"], "category": f["category"],
+                "severity": f["severity"], "title": f["title"], "description": f["description"],
+                "status": "open", "created_at": now_iso, "resolved_at": None,
+            } for f in initial]
+            await db.security_findings.insert_many([d.copy() for d in docs])
+        await db.security_scan_state.update_one(
+            {"user_id": uid},
+            {"$set": {
+                "apps_scanned": random.randint(80, 220),
+                "permissions_reviewed": random.randint(200, 450),
+                "last_scan_at": now_iso,
+            }},
+            upsert=True,
+        )
+
+    return await _build_security_scan(uid, cur_token)
+
+
+@api_router.post("/device/security/scan", response_model=SecurityScanResult)
+async def scan_security(user=Depends(get_current_user), authorization: Optional[str] = Header(default=None)):
+    uid = user["user_id"]
+    cur_token = authorization.split(" ", 1)[1].strip() if authorization and authorization.startswith("Bearer ") else ""
+
+    existing_open = await db.security_findings.find({"user_id": uid, "status": "open"}).to_list(50)
+    existing_open_keys = {d["key"] for d in existing_open}
+    new_findings = _pick_new_security_findings(existing_open_keys, max_new=1)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if new_findings:
+        docs = [{
+            "id": str(uuid.uuid4()), "user_id": uid, "key": f["key"], "category": f["category"],
+            "severity": f["severity"], "title": f["title"], "description": f["description"],
+            "status": "open", "created_at": now_iso, "resolved_at": None,
+        } for f in new_findings]
+        await db.security_findings.insert_many([d.copy() for d in docs])
+
+    await db.security_scan_state.update_one(
+        {"user_id": uid}, {"$set": {"last_scan_at": now_iso}}, upsert=True,
+    )
+    scan = await _build_security_scan(uid, cur_token)
+    return SecurityScanResult(new_findings_found=len(new_findings), scan=scan)
+
+
+@api_router.post("/device/security/findings/{finding_id}/resolve")
+async def resolve_security_finding(finding_id: str, user=Depends(get_current_user)):
+    """Only device-level findings live in this collection — a session
+    finding's id is derived (\"session-{sid}\") and is resolved by revoking
+    the session itself via POST /auth/sessions/{sid}/revoke, not this route."""
+    res = await db.security_findings.update_one(
+        {"id": finding_id, "user_id": user["user_id"], "status": "open"},
+        {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Unknown or already-resolved finding id")
+    return {"resolved": True}
+
+
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     if not EMERGENT_LLM_KEY:
@@ -2380,6 +2546,8 @@ async def create_indexes():
         await db.autoclean_schedules.create_index("user_id", unique=True)
         await db.duplicate_groups.create_index("user_id")
         await db.duplicate_groups.create_index([("user_id", 1), ("status", 1)])
+        await db.security_findings.create_index([("user_id", 1), ("status", 1)])
+        await db.security_scan_state.create_index("user_id", unique=True)
     except Exception:
         logging.exception("Index creation failed")
 
