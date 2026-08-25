@@ -48,6 +48,9 @@ export const api = {
   removeDuplicates: (groupIds: string[]) =>
     req<any>('/device/duplicates/remove', { method: 'POST', body: JSON.stringify({ group_ids: groupIds }) }),
   largeFiles: () => req<any[]>('/device/large-files'),
+  scanLargeFiles: () => req<any>('/device/large-files/scan', { method: 'POST' }),
+  deleteLargeFiles: (fileIds: string[]) =>
+    req<any>('/device/large-files/delete', { method: 'POST', body: JSON.stringify({ file_ids: fileIds }) }),
   battery: () => req<any>('/device/battery'),
   optimizeBattery: () => req<any>('/device/battery/optimize', { method: 'POST' }),
   security: () => req<any>('/device/security'),
