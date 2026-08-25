@@ -2,6 +2,10 @@ import { getToken } from './authStorage';
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
+// Public, human-viewable page for a shared Cleanup Report (GET /r/{code},
+// outside the /api prefix) — this is the link that goes in the share sheet.
+export const reportShareUrl = (shareCode: string) => `${BASE}/r/${shareCode}`;
+
 let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: () => void) { onUnauthorized = fn; }
 
@@ -74,6 +78,8 @@ export const api = {
   leaveFamily: () => req<any>('/family/leave', { method: 'POST' }),
   familyRemoteClean: (memberUserId: string) =>
     req<any>(`/family/remote-clean/${memberUserId}`, { method: 'POST' }),
+  reportMine: () => req<any>('/reports/mine'),
+  generateReport: () => req<any>('/reports/generate', { method: 'POST' }),
 
   // AI Health Coach
   coachDaily: () => req<any>('/coach/daily'),
