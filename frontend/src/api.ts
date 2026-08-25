@@ -81,6 +81,18 @@ export const api = {
   reportMine: () => req<any>('/reports/mine'),
   generateReport: () => req<any>('/reports/generate', { method: 'POST' }),
 
+  // Entitlements (Pro) — synced from the real RevenueCat state, see revenuecat.tsx
+  myEntitlement: () => req<any>('/entitlements/me'),
+  syncEntitlement: (isPro: boolean) =>
+    req<any>('/entitlements/sync', { method: 'POST', body: JSON.stringify({ is_pro: isPro }) }),
+
+  // Auto-Clean Scheduling (Pro-only)
+  autoCleanSchedule: () => req<any>('/autoclean/schedule'),
+  saveAutoCleanSchedule: (body: { enabled: boolean; frequency: string; day_of_week?: number; categories: string[] }) =>
+    req<any>('/autoclean/schedule', { method: 'PUT', body: JSON.stringify(body) }),
+  deleteAutoCleanSchedule: () => req<any>('/autoclean/schedule', { method: 'DELETE' }),
+  runAutoCleanIfDue: () => req<any>('/autoclean/run-if-due', { method: 'POST' }),
+
   // AI Health Coach
   coachDaily: () => req<any>('/coach/daily'),
   coachHistory: () => req<any[]>('/coach/history'),
