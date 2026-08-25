@@ -50,6 +50,8 @@ export const api = {
   largeFiles: () => req<any[]>('/device/large-files'),
   battery: () => req<any>('/device/battery'),
   security: () => req<any>('/device/security'),
+  scanSecurity: () => req<any>('/device/security/scan', { method: 'POST' }),
+  resolveSecurityFinding: (id: string) => req<any>(`/device/security/findings/${id}/resolve`, { method: 'POST' }),
   runScan: () => req<any>('/device/scan', { method: 'POST' }),
   runClean: (body: { categories: string[]; reclaimable_mb: number }) =>
     req<any>('/device/clean', { method: 'POST', body: JSON.stringify(body) }),
