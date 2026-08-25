@@ -107,6 +107,8 @@ export default function Settings() {
             <NavRow icon="gift-outline" label="Refer a friend" badge="Free Pro" onPress={() => router.push('/referral')} testID="settings-referral" />
             <Divider />
             <NavRow icon="grid-outline" label="Home screen widget" onPress={() => router.push('/widget-preview')} testID="settings-widget" />
+            <Divider />
+            <NavRow icon="share-social-outline" label="Cleanup report" onPress={() => router.push('/cleanup-report')} testID="settings-cleanup-report" />
           </View>
 
           <Text style={styles.section}>Preferences</Text>
