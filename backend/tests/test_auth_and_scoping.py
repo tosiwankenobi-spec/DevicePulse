@@ -70,6 +70,7 @@ def _cleanup_user(user_id, token):
     _db.security_scan_state.delete_many({"user_id": user_id})
     _db.battery_state.delete_many({"user_id": user_id})
     _db.large_files.delete_many({"user_id": user_id})
+    _db.memory_state.delete_many({"user_id": user_id})
 
 
 @pytest.fixture(scope="module")
@@ -152,6 +153,9 @@ PROTECTED = [
     ("GET", "/device/large-files", None),
     ("POST", "/device/large-files/scan", None),
     ("POST", "/device/large-files/delete", {"file_ids": ["does-not-exist"]}),
+    # Memory/RAM Boost:
+    ("GET", "/device/memory", None),
+    ("POST", "/device/memory/boost", None),
 ]
 
 PUBLIC = [
