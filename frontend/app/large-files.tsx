@@ -8,6 +8,14 @@ import * as Haptics from 'expo-haptics';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 
+type LargeFileItem = {
+  id: string;
+  name: string;
+  size_mb: number;
+  type: string;
+  modified_at: string;
+};
+
 const ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
   video: 'videocam',
   audio: 'musical-notes',
@@ -24,18 +32,50 @@ const COLORS: Record<string, string> = {
 
 export default function LargeFiles() {
   const router = useRouter();
-  const [files, setFiles] = useState<any[]>([]);
+  const [files, setFiles] = useState<LargeFileItem[]>([]);
   const [sortDesc, setSortDesc] = useState(true);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     api.largeFiles().then(setFiles).finally(() => setLoading(false));
   }, []);
 
-  const sorted = [...files].sort((a, b) => sortDesc ? b.size_mb - a.size_mb : a.size_mb - b.size_mb);
-  const totalMb = files.filter(f => selected[f.id]).reduce((a, f) => a + f.size_mb, 0);
-  const toggle = (id: string) => { Haptics.selectionAsync(); setSelected(s => ({ ...s, [id]: !s[id] })); };
+  const sorted = [...files].sort((a: LargeFileItem, b: LargeFileItem) => sortDesc ? b.size_mb - a.size_mb : a.size_mb - b.size_mb);
+  const totalMb = files.filter((f: LargeFileItem) => selected[f.id]).reduce((a: number, f: LargeFileItem) => a + f.size_mb, 0);
+  const toggle = (id: string) => { Haptics.selectionAsync(); setSelected((s: Record<string, boolean>) => ({ ...s, [id]: !s[id] })); };
+
+  const onScan = async () => {
+    setScanning(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    try {
+      const res = await api.scanLargeFiles();
+      setFiles(res.files);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const onDelete = async () => {
+    const ids = Object.keys(selected).filter((id) => selected[id]);
+    if (ids.length === 0) return;
+    setDeleting(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    try {
+      const res = await api.deleteLargeFiles(ids);
+      setFiles(res.files);
+      setSelected({});
+      router.back();
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <View style={styles.container} testID="large-files-screen">
@@ -46,23 +86,40 @@ export default function LargeFiles() {
             <Ionicons name="chevron-back" size={26} color={theme.color.onSurface} />
           </Pressable>
           <Text style={styles.topTitle}>Large Files</Text>
-          <Pressable onPress={() => setSortDesc(s => !s)} testID="lf-sort">
-            <Ionicons name={sortDesc ? 'arrow-down' : 'arrow-up'} size={22} color={theme.color.brand} />
-          </Pressable>
+          <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
+            <Pressable onPress={onScan} disabled={scanning} hitSlop={8} testID="lf-scan-again">
+              {scanning
+                ? <ActivityIndicator size="small" color={theme.color.brand} />
+                : <Ionicons name="sparkles-outline" size={20} color={theme.color.brand} />}
+            </Pressable>
+            <Pressable onPress={() => setSortDesc((s: boolean) => !s)} testID="lf-sort">
+              <Ionicons name={sortDesc ? 'arrow-down' : 'arrow-up'} size={22} color={theme.color.brand} />
+            </Pressable>
+          </View>
         </View>
 
         {loading ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
             <ActivityIndicator color={theme.color.brand} />
           </View>
+        ) : files.length === 0 ? (
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: theme.space.xl, gap: 12 }}>
+            <Ionicons name="checkmark-circle" size={48} color={theme.color.brand} />
+            <Text style={{ color: theme.color.onSurface, fontSize: 16, fontWeight: '700' }}>No large files right now</Text>
+            <Pressable style={styles.scanAgainCta} onPress={onScan} disabled={scanning} testID="lf-scan-again-empty">
+              {scanning
+                ? <ActivityIndicator size="small" color={theme.color.onBrand} />
+                : <Text style={styles.scanAgainCtaText}>Scan again</Text>}
+            </Pressable>
+          </View>
         ) : (
           <>
             <View style={styles.summary}>
               <Text style={styles.summaryValue}>{(totalMb / 1024).toFixed(2)} GB</Text>
-              <Text style={styles.summaryLabel}>selected · {files.filter(f => selected[f.id]).length} files</Text>
+              <Text style={styles.summaryLabel}>selected · {files.filter((f: LargeFileItem) => selected[f.id]).length} files</Text>
             </View>
             <ScrollView contentContainerStyle={{ paddingHorizontal: theme.space.lg, paddingBottom: 100 }}>
-              {sorted.map((f) => (
+              {sorted.map((f: LargeFileItem) => (
                 <Pressable key={f.id} style={[styles.row, selected[f.id] && styles.rowActive]} onPress={() => toggle(f.id)} testID={`lf-row-${f.id}`}>
                   <View style={[styles.icon, { backgroundColor: (COLORS[f.type] || theme.color.brand) + '22' }]}>
                     <Ionicons name={ICONS[f.type] || 'document'} size={22} color={COLORS[f.type] || theme.color.brand} />
@@ -78,9 +135,16 @@ export default function LargeFiles() {
               ))}
             </ScrollView>
             <View style={styles.bottomBar}>
-              <Pressable style={[styles.cta, totalMb === 0 && { opacity: 0.4 }]} disabled={totalMb === 0} onPress={() => router.back()} testID="lf-delete-button">
+              <Pressable
+                style={[styles.cta, (totalMb === 0 || deleting) && { opacity: 0.4 }]}
+                disabled={totalMb === 0 || deleting}
+                onPress={onDelete}
+                testID="lf-delete-button"
+              >
                 <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
-                <Text style={styles.ctaText}>Delete {(totalMb / 1024).toFixed(2)} GB</Text>
+                {deleting
+                  ? <ActivityIndicator color={theme.color.onBrand} />
+                  : <Text style={styles.ctaText}>Delete {(totalMb / 1024).toFixed(2)} GB</Text>}
               </Pressable>
             </View>
           </>
@@ -107,4 +171,6 @@ const styles = StyleSheet.create({
   bottomBar: { padding: theme.space.lg, paddingBottom: 32, borderTopWidth: 1, borderTopColor: theme.color.border, backgroundColor: theme.color.surface },
   cta: { height: 52, borderRadius: theme.radius.pill, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   ctaText: { color: theme.color.onBrand, fontSize: 16, fontWeight: '700' },
+  scanAgainCta: { height: 44, paddingHorizontal: 22, borderRadius: theme.radius.pill, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.color.brand },
+  scanAgainCtaText: { color: theme.color.onBrand, fontSize: 14, fontWeight: '700' },
 });
