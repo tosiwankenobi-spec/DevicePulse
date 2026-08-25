@@ -9,7 +9,7 @@ import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 import { useSubscription } from '@/src/lib/revenuecat';
 
-type Tab = 'storage' | 'battery' | 'security';
+type Tab = 'storage' | 'battery' | 'memory' | 'security';
 
 export default function Insights() {
   const router = useRouter();
@@ -18,6 +18,8 @@ export default function Insights() {
   const [storage, setStorage] = useState<any>(null);
   const [battery, setBattery] = useState<any>(null);
   const [batteryBusy, setBatteryBusy] = useState(false);
+  const [memory, setMemory] = useState<any>(null);
+  const [memoryBusy, setMemoryBusy] = useState(false);
   const [security, setSecurity] = useState<any>(null);
   const [securityBusy, setSecurityBusy] = useState<string | null>(null); // finding id (or 'scan') in flight
 
@@ -28,6 +30,7 @@ export default function Insights() {
   useEffect(() => {
     api.storage().then(setStorage).catch(() => {});
     api.battery().then(setBattery).catch(() => {});
+    api.memory().then(setMemory).catch(() => {});
     loadSecurity();
   }, [loadSecurity]);
 
@@ -42,6 +45,19 @@ export default function Insights() {
       console.log(e);
     } finally {
       setBatteryBusy(false);
+    }
+  };
+
+  const onBoostMemory = async () => {
+    setMemoryBusy(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    try {
+      const res = await api.boostMemory();
+      setMemory(res.state);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setMemoryBusy(false);
     }
   };
 
@@ -99,7 +115,7 @@ export default function Insights() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.chipRow}
         >
-          {(['storage', 'battery', 'security'] as Tab[]).map((t) => (
+          {(['storage', 'battery', 'memory', 'security'] as Tab[]).map((t) => (
             <Pressable
               key={t}
               onPress={() => setTab(t)}
@@ -125,6 +141,11 @@ export default function Insights() {
                 busy={batteryBusy}
                 onOptimize={onOptimizeBattery}
               />
+            ) : <Loader />
+          )}
+          {tab === 'memory' && (
+            memory ? (
+              <MemoryView data={memory} busy={memoryBusy} onBoost={onBoostMemory} />
             ) : <Loader />
           )}
           {tab === 'security' && (
@@ -258,6 +279,59 @@ const BatteryView = ({ data, isPro, busy, onOptimize }: BatteryViewProps) => (
               <View style={[styles.appPctFill, { width: `${app.pct * 4}%` }]} />
             </View>
             <Text style={styles.appPct}>{app.pct}%</Text>
+          </View>
+        ))}
+      </View>
+    )}
+  </View>
+);
+
+type MemoryViewProps = {
+  data: any;
+  busy: boolean;
+  onBoost: () => void;
+};
+
+const MemoryView = ({ data, busy, onBoost }: MemoryViewProps) => (
+  <View>
+    <View style={styles.card}>
+      <Text style={styles.cardLabel}>RAM Used</Text>
+      <Text style={styles.cardValue}>{data.ram_used_pct}%</Text>
+      <View style={styles.progressTrack}>
+        <View style={[styles.progressFill, { width: `${data.ram_used_pct}%`, backgroundColor: '#8B5CF6' }]} />
+      </View>
+      <Text style={styles.helperText}>{data.ram_total_gb} GB total</Text>
+    </View>
+
+    <View style={styles.optimizeRow}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.optimizeTitle}>Memory Boost</Text>
+        <Text style={styles.helperText}>
+          {data.boosts_run > 0
+            ? `Boosted ${data.boosts_run}x • closes your highest-RAM apps`
+            : 'Close your highest-RAM background apps to free up memory'}
+        </Text>
+      </View>
+      <Pressable
+        style={[styles.optimizeBtn, { backgroundColor: '#8B5CF6' }]}
+        onPress={onBoost}
+        disabled={busy}
+        testID="memory-boost-button"
+      >
+        {busy
+          ? <ActivityIndicator size="small" color={theme.color.onBrand} />
+          : <Text style={styles.optimizeBtnText}>Boost now</Text>}
+      </Pressable>
+    </View>
+
+    <Text style={styles.sectionTitle}>{data.apps_running.length > 0 ? 'Apps Using RAM' : 'No background apps running'}</Text>
+    {data.apps_running.length > 0 && (
+      <View style={styles.card}>
+        {data.apps_running.map((app: any, i: number) => (
+          <View key={i} style={styles.appRow}>
+            <Text style={{ fontSize: 20 }}>{app.icon}</Text>
+            <Text style={[styles.appName, { flex: 1 }]}>{app.name}</Text>
+            <Text style={[styles.appPct, { width: 64 }]}>{app.ram_mb} MB</Text>
           </View>
         ))}
       </View>

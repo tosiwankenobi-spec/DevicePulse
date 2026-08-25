@@ -21,7 +21,7 @@ const TOOLS: Tool[] = [
   { key: 'large', title: 'Large Files', desc: 'Videos, archives, downloads', icon: 'folder-open-outline', color: theme.color.info, route: '/large-files', section: 'Storage' },
   { key: 'cache', title: 'App Cache', desc: 'Clear temp files by app', icon: 'trash-outline', color: theme.color.warning, route: '/junk', section: 'Storage' },
   { key: 'battery', title: 'Battery Boost', desc: 'Stop high-drain apps', icon: 'battery-charging-outline', color: '#F59E0B', route: '/(tabs)/insights', section: 'Performance' },
-  { key: 'memory', title: 'Memory Cleanup', desc: 'Free up RAM instantly', icon: 'hardware-chip-outline', color: '#8B5CF6', route: '/smart-scan', section: 'Performance' },
+  { key: 'memory', title: 'Memory Cleanup', desc: 'Free up RAM instantly', icon: 'hardware-chip-outline', color: '#8B5CF6', route: '/(tabs)/insights', section: 'Performance' },
   { key: 'security', title: 'Security Scan', desc: 'Malware & permissions', icon: 'shield-checkmark-outline', color: theme.color.brand, route: '/(tabs)/insights', section: 'Protection' },
 ];
 
