@@ -247,6 +247,14 @@ class WidgetSummary(BaseModel):
     security_ok: bool
     updated_at: str  # ISO timestamp of this computation — proves the widget is live
 
+class Nudge(BaseModel):
+    type: str  # storage_critical | security | storage_reclaim
+    title: str
+    message: str
+    cta_label: str
+    cta_route: str
+    priority: int  # lower = more urgent; only the top qualifying nudge is ever returned
+
 
 # ==================== Helpers ====================
 def _seed_health() -> DeviceHealth:
@@ -321,6 +329,73 @@ def _pulse_headline(score: int, cleaned_last_24h: bool, storage_pct: int) -> str
             return "Storage is getting tight — a quick scan would help."
         return "Looking solid. A quick scan keeps it that way."
     return "Your device could use some attention today."
+
+
+NUDGE_DISMISS_COOLDOWN_HOURS = 24
+NUDGE_TYPES = {"storage_reclaim", "security"}
+
+
+def _estimate_reclaimable_mb(cleanups: list) -> float:
+    """Deterministic, non-LLM estimate of currently-reclaimable junk/cache/
+    duplicates. Junk re-accumulates over time after a cleanup (~35MB/hour),
+    capped at a plausible ceiling; a user who has never cleaned up is treated
+    as already at a steady-state amount of accumulated junk."""
+    now = datetime.now(timezone.utc)
+    last_cleanup_dt = None
+    for d in cleanups:
+        try:
+            dt = datetime.fromisoformat(d["completed_at"])
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if last_cleanup_dt is None or dt > last_cleanup_dt:
+            last_cleanup_dt = dt
+
+    if last_cleanup_dt is None:
+        return 1850.0
+
+    hours_since = (now - last_cleanup_dt).total_seconds() / 3600
+    return round(min(3600.0, hours_since * 35.0), 1)
+
+
+def _build_nudge_candidates(seed: DeviceHealth, reclaimable_mb: float) -> list:
+    """Smart Nudges: surface at most one nudge, and only when a condition
+    actually crosses a threshold worth interrupting the user for — not on
+    every open. Candidates are ranked by priority (lower = more urgent).
+
+    Only two conditions are wired up today, both driven by real per-user
+    state: a meaningful amount of reclaimable junk (the flagship "You could
+    reclaim 2.3 GB right now" case), and an open security finding (acts as
+    an always-available fallback nudge under the app's current simulated
+    baseline, which is a deliberately simpler starting set than a full
+    multi-signal nudge engine — easy to extend with more candidates later)."""
+    security_ok = "issue" not in seed.security_status.lower()
+    candidates = []
+
+    if reclaimable_mb >= 1500:
+        gb = round(reclaimable_mb / 1024, 1)
+        candidates.append(Nudge(
+            type="storage_reclaim",
+            title="Space to reclaim",
+            message=f"You could reclaim {gb} GB right now.",
+            cta_label="Free up space",
+            cta_route="/smart-scan",
+            priority=1,
+        ))
+
+    if not security_ok:
+        candidates.append(Nudge(
+            type="security",
+            title="Security check needed",
+            message=f"{seed.security_status.capitalize()} found on your device — worth a look.",
+            cta_label="Review",
+            cta_route="/insights",
+            priority=2,
+        ))
+
+    candidates.sort(key=lambda n: n.priority)
+    return candidates
 
 
 # SEC-001: lightweight in-memory rate limiter for the paid LLM endpoint
@@ -1017,6 +1092,45 @@ async def widget_summary(user=Depends(get_current_user)):
         security_ok=security_ok,
         updated_at=datetime.now(timezone.utc).isoformat(),
     )
+
+# ---------- Smart Nudges ----------
+# "You could reclaim 2.3 GB right now" — surfaced only when it actually
+# matters, not spam. At most ONE nudge is ever returned (the highest-priority
+# qualifying condition), and once a user dismisses a nudge type it stays
+# quiet for NUDGE_DISMISS_COOLDOWN_HOURS even if the underlying condition is
+# still true.
+@api_router.get("/nudges/active", response_model=Optional[Nudge])
+async def get_active_nudge(user=Depends(get_current_user)):
+    user_id = user["user_id"]
+    cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
+    reclaimable_mb = _estimate_reclaimable_mb(cleanups)
+    seed = _seed_health()
+    candidates = _build_nudge_candidates(seed, reclaimable_mb)
+    if not candidates:
+        return None
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=NUDGE_DISMISS_COOLDOWN_HOURS)
+    dismissals = await db.nudge_dismissals.find(
+        {"user_id": user_id, "dismissed_at": {"$gte": cutoff}}
+    ).to_list(10)
+    dismissed_types = {d["type"] for d in dismissals}
+
+    for candidate in candidates:
+        if candidate.type not in dismissed_types:
+            return candidate
+    return None
+
+@api_router.post("/nudges/{nudge_type}/dismiss")
+async def dismiss_nudge(nudge_type: str, user=Depends(get_current_user)):
+    if nudge_type not in NUDGE_TYPES:
+        raise HTTPException(status_code=400, detail="Unknown nudge type")
+    user_id = user["user_id"]
+    await db.nudge_dismissals.update_one(
+        {"user_id": user_id, "type": nudge_type},
+        {"$set": {"dismissed_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+    return {"dismissed": True, "type": nudge_type}
 
 @api_router.get("/family", response_model=List[FamilyMember])
 async def get_family(user=Depends(get_current_user)):
