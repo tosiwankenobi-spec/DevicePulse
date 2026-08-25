@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { api } from '@/src/api';
 import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
@@ -12,6 +13,8 @@ export default function Forecast() {
   const router = useRouter();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [fixing, setFixing] = useState(false);
+  const [justFixed, setJustFixed] = useState<{ reclaimedMb: number; newDays: number } | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -20,6 +23,21 @@ export default function Forecast() {
       finally { setLoading(false); }
     })();
   }, []);
+
+  const onQuickFix = async () => {
+    if (fixing) return;
+    setFixing(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    try {
+      const result = await api.forecastQuickFix();
+      setData(result.forecast);
+      setJustFixed({ reclaimedMb: result.reclaimed_mb, newDays: result.forecast.days_until_full });
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setFixing(false);
+    }
+  };
 
   const soon = data && data.days_until_full <= 30;
 
@@ -84,22 +102,46 @@ export default function Forecast() {
               <Text style={styles.chartCaption}>Days from now →</Text>
             </View>
 
-            {/* Tip */}
+            {/* Tip / fix result */}
             <View style={styles.tip}>
               <View style={styles.tipIcon}>
-                <Ionicons name="bulb" size={18} color={theme.color.brand} />
+                <Ionicons name={justFixed ? 'checkmark-circle' : 'bulb'} size={18} color={theme.color.brand} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.tipTitle}>Stay ahead of it</Text>
-                <Text style={styles.tipBody}>
-                  A weekly Smart Scan clears ~1.5 GB and can push your &quot;full&quot; date back by weeks.
-                </Text>
+                {justFixed ? (
+                  <>
+                    <Text style={styles.tipTitle}>Fixed — nice work</Text>
+                    <Text style={styles.tipBody}>
+                      Freed {Math.round(justFixed.reclaimedMb)} MB. You&apos;re now projected to run out in ~{justFixed.newDays} days instead.
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.tipTitle}>Stay ahead of it</Text>
+                    <Text style={styles.tipBody}>
+                      One tap runs an instant cleanup sized to your own usage and pushes your &quot;full&quot; date back right away.
+                    </Text>
+                  </>
+                )}
               </View>
             </View>
 
-            <Pressable style={styles.cta} onPress={() => router.push('/smart-scan')} testID="forecast-scan-cta">
+            <Pressable
+              style={[styles.cta, fixing && styles.ctaDisabled]}
+              onPress={onQuickFix}
+              disabled={fixing}
+              testID="forecast-quick-fix-cta"
+            >
               <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
-              <Text style={styles.ctaText}>Free up space now</Text>
+              {fixing ? (
+                <ActivityIndicator color={theme.color.onBrand} />
+              ) : (
+                <Text style={styles.ctaText}>{justFixed ? 'Fix again' : 'Fix now — one tap'}</Text>
+              )}
+            </Pressable>
+
+            <Pressable style={styles.secondaryLink} onPress={() => router.push('/smart-scan')} testID="forecast-scan-link">
+              <Text style={styles.secondaryLinkText}>Or open Smart Scan to choose what to clean</Text>
             </Pressable>
           </ScrollView>
         )}
@@ -135,5 +177,8 @@ const styles = StyleSheet.create({
   tipTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
   tipBody: { color: theme.color.onSurface2, fontSize: 13, marginTop: 2, lineHeight: 18 },
   cta: { height: 54, borderRadius: theme.radius.pill, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', marginTop: theme.space.xl },
+  ctaDisabled: { opacity: 0.7 },
   ctaText: { color: theme.color.onBrand, fontSize: 16, fontWeight: '700' },
+  secondaryLink: { alignItems: 'center', justifyContent: 'center', paddingVertical: theme.space.md },
+  secondaryLinkText: { color: theme.color.onSurface3, fontSize: 13, fontWeight: '500' },
 });
