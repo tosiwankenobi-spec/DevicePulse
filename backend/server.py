@@ -227,6 +227,15 @@ class CoachDaily(BaseModel):
     action_label: str
     action_route: str
 
+class CoachInsight(BaseModel):
+    key: str          # stable id, e.g. "win_clean_5" or "pattern_duplicates"
+    kind: str         # "win" | "pattern"
+    title: str
+    body: str
+    icon: str         # Ionicons name
+    action_label: Optional[str] = None
+    action_route: Optional[str] = None
+
 class PulseDaily(BaseModel):
     date: str
     score: int
@@ -798,9 +807,7 @@ async def update_reminders(prefs: ReminderPrefs, user=Depends(get_current_user))
     await db.reminders.update_one({"device_id": device_id}, {"$set": data}, upsert=True)
     return ReminderPrefs(**data)
 
-@api_router.get("/streak")
-async def get_streak(user=Depends(get_current_user)):
-    device_id = user["user_id"]
+async def _compute_streak_data(device_id: str) -> dict:
     docs = await db.cleanups.find({"device_id": device_id}).sort("completed_at", -1).to_list(1000)
     total_cleanups = len(docs)
 
@@ -873,6 +880,10 @@ async def get_streak(user=Depends(get_current_user)):
         "freeze_available": not freeze_used_this_month,
         "freezes_used": len([f for f in freeze_docs]),
     }
+
+@api_router.get("/streak")
+async def get_streak(user=Depends(get_current_user)):
+    return await _compute_streak_data(user["user_id"])
 
 @api_router.post("/streak/freeze")
 async def use_freeze(user=Depends(get_current_user)):
@@ -1422,6 +1433,132 @@ async def coach_chat(req: CoachChatRequest, request: Request, user=Depends(get_c
     reply_at = datetime.now(timezone.utc).isoformat()
     await db.coach_messages.insert_one({"user_id": user_id, "role": "assistant", "content": reply, "created_at": reply_at})
     return CoachMessage(role="assistant", content=reply, created_at=reply_at)
+
+
+# ---- Coach upgrade: a running assistant, not a one-time report ----
+# Everything below is deterministic (no LLM calls) so it's fully unit-testable
+# and cheap to compute on every screen visit: it turns the Coach from a single
+# cached daily card into a small ongoing feed that (a) learns the user's real
+# cleanup habits from their history and proposes a monthly plan around their
+# top category, and (b) celebrates milestones the moment they're crossed,
+# without re-celebrating the same win twice.
+
+MB_PER_GB = 1024.0
+
+# min_cleanups / min_gb / min_streak are mutually exclusive per entry — each
+# win is anchored to exactly one signal so it stays simple to reason about.
+WIN_DEFS = [
+    {"key": "win_first_clean", "min_cleanups": 1, "title": "First cleanup done! 🎉",
+     "body": "You ran your very first cleanup — a great habit to start."},
+    {"key": "win_clean_5", "min_cleanups": 5, "title": "5 cleanups milestone",
+     "body": "You've completed 5 cleanups. Keep the momentum going!"},
+    {"key": "win_clean_10", "min_cleanups": 10, "title": "10 cleanups milestone",
+     "body": "10 cleanups and counting — your device thanks you."},
+    {"key": "win_clean_25", "min_cleanups": 25, "title": "25 cleanups milestone",
+     "body": "25 cleanups! You've built a real routine."},
+    {"key": "win_gb_1", "min_gb": 1, "title": "1 GB reclaimed",
+     "body": "You've freed up over 1 GB of space in total. Nice work."},
+    {"key": "win_gb_5", "min_gb": 5, "title": "5 GB reclaimed",
+     "body": "5 GB reclaimed lifetime — that's thousands of photos worth of space."},
+    {"key": "win_gb_10", "min_gb": 10, "title": "10 GB reclaimed",
+     "body": "10 GB reclaimed. Outstanding cleanup streak."},
+    {"key": "win_streak_2", "min_streak": 2, "title": "2-week streak",
+     "body": "Two weeks running — you're building a great habit."},
+    {"key": "win_streak_4", "min_streak": 4, "title": "4-week streak",
+     "body": "A full month of consistent cleanups. Impressive."},
+    {"key": "win_streak_8", "min_streak": 8, "title": "8-week streak",
+     "body": "8 weeks straight — you're a DevicePulse power user."},
+]
+WIN_KEYS = {w["key"] for w in WIN_DEFS}
+
+CATEGORY_PLAN = {
+    "Junk files": "Junk builds up fast from browsing and everyday app use. This month, run a Smart Scan weekly so it never piles up.",
+    "Duplicates": "You clean up duplicate photos more than anything else. This month, run the Duplicate cleanup after big photo days (trips, events) so it doesn't build up.",
+    "Large files": "Large files are your biggest space-taker. This month, check the Large Files finder every couple of weeks — old videos and downloads are the usual culprits.",
+    "App cache": "App cache is what you clear most often. This month, a quick cache clear every 1-2 weeks should keep things smooth without losing anything important.",
+}
+DEFAULT_PLAN = "Once you've run a few cleanups, I'll spot your top habit and build a monthly plan around it."
+
+
+def _build_win_candidates(total_cleanups: int, total_reclaimed_mb: float, current_streak_weeks: int) -> list:
+    gb = total_reclaimed_mb / MB_PER_GB
+    candidates = []
+    for w in WIN_DEFS:
+        if "min_cleanups" in w and total_cleanups >= w["min_cleanups"]:
+            candidates.append(w)
+        elif "min_gb" in w and gb >= w["min_gb"]:
+            candidates.append(w)
+        elif "min_streak" in w and current_streak_weeks >= w["min_streak"]:
+            candidates.append(w)
+    return candidates
+
+
+def _detect_top_category(cleanups: list) -> Optional[str]:
+    """Return the user's most-cleaned category once there's enough history to
+    call it a pattern (3+ cleanups); otherwise None. Ties break alphabetically
+    so the result is deterministic and testable."""
+    if len(cleanups) < 3:
+        return None
+    counts: dict = {}
+    for d in cleanups:
+        for cat in d.get("categories", []):
+            counts[cat] = counts.get(cat, 0) + 1
+    if not counts:
+        return None
+    top_count = max(counts.values())
+    top = sorted([c for c, n in counts.items() if n == top_count])
+    return top[0]
+
+
+@api_router.get("/coach/insights", response_model=List[CoachInsight])
+async def coach_insights(user=Depends(get_current_user)):
+    user_id = user["user_id"]
+    cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
+    total_cleanups = len(cleanups)
+    total_reclaimed_mb = sum(d.get("reclaimed_mb", 0.0) for d in cleanups)
+
+    streak_data = await _compute_streak_data(user_id)
+    current_streak_weeks = streak_data["current_streak_weeks"]
+
+    seen = await db.coach_seen_wins.find({"user_id": user_id}).to_list(200)
+    seen_keys = {s["key"] for s in seen}
+
+    insights: List[CoachInsight] = []
+
+    for w in _build_win_candidates(total_cleanups, total_reclaimed_mb, current_streak_weeks):
+        if w["key"] in seen_keys:
+            continue
+        insights.append(CoachInsight(
+            key=w["key"], kind="win", title=w["title"], body=w["body"], icon="trophy",
+        ))
+
+    top_category = _detect_top_category(cleanups)
+    if top_category:
+        plan = CATEGORY_PLAN.get(top_category, DEFAULT_PLAN)
+        insights.append(CoachInsight(
+            key=f"pattern_{top_category.lower().replace(' ', '_')}",
+            kind="pattern",
+            title=f"You clean up {top_category} the most",
+            body=plan,
+            icon="analytics",
+            action_label="Open Smart Scan",
+            action_route="/smart-scan",
+        ))
+
+    return insights
+
+
+@api_router.post("/coach/insights/{key}/ack")
+async def ack_coach_insight(key: str, user=Depends(get_current_user)):
+    if key not in WIN_KEYS:
+        raise HTTPException(status_code=400, detail="Unknown insight key")
+    user_id = user["user_id"]
+    await db.coach_seen_wins.update_one(
+        {"user_id": user_id, "key": key},
+        {"$set": {"seen_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"acknowledged": True, "key": key}
 
 
 app.include_router(api_router)
