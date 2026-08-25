@@ -39,6 +39,15 @@ type Pulse = {
   security_ok: boolean;
 };
 
+type Nudge = {
+  type: string;
+  title: string;
+  message: string;
+  cta_label: string;
+  cta_route: string;
+  priority: number;
+};
+
 export default function Home() {
   const router = useRouter();
   const { user, justLoggedIn, clearJustLoggedIn } = useAuth();
@@ -49,6 +58,8 @@ export default function Home() {
   const [streak, setStreak] = useState<number | null>(null);
   const [forecastDays, setForecastDays] = useState<number | null>(null);
   const [pulse, setPulse] = useState<Pulse | null>(null);
+  const [nudge, setNudge] = useState<Nudge | null>(null);
+  const [dismissingNudge, setDismissingNudge] = useState(false);
 
   const load = async () => {
     try {
@@ -57,11 +68,26 @@ export default function Home() {
     } catch (e) { console.log(e); }
     try {
       const id = await getDeviceId();
-      const [s, f, p] = await Promise.all([api.streak(), api.forecast(), api.pulseDaily()]);
+      const [s, f, p, n] = await Promise.all([api.streak(), api.forecast(), api.pulseDaily(), api.activeNudge()]);
       setStreak(s.current_streak_weeks);
       setForecastDays(f.days_until_full);
       setPulse(p);
+      setNudge(n);
     } catch (e) { console.log(e); }
+  };
+
+  const onDismissNudge = async () => {
+    if (!nudge || dismissingNudge) return;
+    const dismissedType = nudge.type;
+    setNudge(null); // optimistic — a Smart Nudge should disappear the moment you dismiss it
+    setDismissingNudge(true);
+    try {
+      await api.dismissNudge(dismissedType);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setDismissingNudge(false);
+    }
   };
 
   const loadRecs = async (h: Health) => {
@@ -89,10 +115,11 @@ export default function Home() {
     }
   }, [justLoggedIn]);
   useFocusEffect(React.useCallback(() => {
-    getDeviceId().then((id) => Promise.all([api.streak(), api.forecast(), api.pulseDaily()]).then(([s, f, p]) => {
+    getDeviceId().then((id) => Promise.all([api.streak(), api.forecast(), api.pulseDaily(), api.activeNudge()]).then(([s, f, p, n]) => {
       setStreak(s.current_streak_weeks);
       setForecastDays(f.days_until_full);
       setPulse(p);
+      setNudge(n);
     }).catch(() => {}));
   }, []));
   useEffect(() => { if (health && !recs) loadRecs(health); }, [health]);
@@ -219,18 +246,27 @@ export default function Home() {
             </View>
           </GlassCard>
 
-          {/* Smart reminder banner */}
-          {storagePct >= 70 && (
-            <Pressable style={styles.reminderBanner} onPress={() => router.push('/smart-scan')} testID="home-reminder-banner">
-              <View style={styles.reminderIcon}>
-                <Ionicons name="notifications" size={18} color={theme.color.warning} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.reminderTitle}>Storage is filling up</Text>
-                <Text style={styles.reminderBody}>You&apos;re at {storagePct}% — a quick scan can free up space.</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={theme.color.onSurface3} />
-            </Pressable>
+          {/* Smart Nudge — surfaced by the backend only when it actually
+              matters (never more than one at a time), not on every open */}
+          {nudge && (
+            <Animated.View entering={FadeInDown}>
+              <Pressable
+                style={styles.reminderBanner}
+                onPress={() => router.push(nudge.cta_route as any)}
+                testID="home-nudge-banner"
+              >
+                <View style={styles.reminderIcon}>
+                  <Ionicons name="notifications" size={18} color={theme.color.warning} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.reminderTitle}>{nudge.title}</Text>
+                  <Text style={styles.reminderBody}>{nudge.message}</Text>
+                </View>
+                <Pressable onPress={onDismissNudge} hitSlop={10} testID="home-nudge-dismiss">
+                  <Ionicons name="close" size={18} color={theme.color.onSurface3} />
+                </Pressable>
+              </Pressable>
+            </Animated.View>
           )}
 
           {/* Quick access: Streak + Forecast */}
