@@ -61,7 +61,8 @@ def _cleanup_user(user_id, token):
     _db.referrals.delete_many({"device_id": user_id})
     _db.reminders.delete_many({"device_id": user_id})
     _db.freezes.delete_many({"device_id": user_id})
-    _db.family.delete_many({"owner_id": user_id})
+    _db.family_memberships.delete_many({"user_id": user_id})
+    _db.family_groups.delete_many({"owner_id": user_id})
 
 
 @pytest.fixture(scope="module")
@@ -92,9 +93,11 @@ PROTECTED = [
     ("GET", "/referral", None),
     ("POST", "/referral/invite", {}),
     ("POST", "/streak/freeze", {}),
-    ("GET", "/family", None),
-    ("POST", "/family/member", {"name": "X", "device_type": "phone"}),
-    ("DELETE", "/family/member/does-not-exist", None),
+    ("GET", "/family/group", None),
+    ("POST", "/family/create", None),
+    ("POST", "/family/join", {"invite_code": "X"}),
+    ("POST", "/family/leave", None),
+    ("POST", "/family/remote-clean/does-not-exist", None),
     ("POST", "/device/clean", {"categories": ["junk"], "reclaimable_mb": 100.0}),
     ("GET", "/device/cache-breakdown", None),
     # New in this iteration:
@@ -175,21 +178,65 @@ class TestSeededSessionFlow:
         items = r2.json()
         assert any(x["reclaimed_mb"] == 777.0 for x in items)
 
-    def test_family_crud(self, client, seeded_user):
+    def test_family_group_create_and_leave(self, client, seeded_user):
         h = {"Authorization": f"Bearer {seeded_user['token']}"}
-        # add
-        r = client.post(f"{API}/family/member", headers=h, json={"name": "Alice", "device_type": "phone"})
+        # No group yet -> GET returns null, not an auto-created one.
+        r0 = client.get(f"{API}/family/group", headers=h)
+        assert r0.status_code == 200 and r0.json() is None
+
+        r = client.post(f"{API}/family/create", headers=h)
         assert r.status_code == 200
-        mid = r.json()["id"]
-        # list
-        r2 = client.get(f"{API}/family", headers=h)
-        assert r2.status_code == 200
-        assert any(m["id"] == mid for m in r2.json())
-        # delete
-        r3 = client.delete(f"{API}/family/member/{mid}", headers=h)
-        assert r3.status_code == 200
-        r4 = client.get(f"{API}/family", headers=h)
-        assert not any(m["id"] == mid for m in r4.json())
+        body = r.json()
+        assert body["is_owner"] is True
+        assert body["invite_code"].startswith("FAM-")
+        assert len(body["members"]) == 1
+        assert body["members"][0]["user_id"] == seeded_user["user_id"]
+
+        # GET now reflects the created group
+        assert client.get(f"{API}/family/group", headers=h).json()["id"] == body["id"]
+
+        # leaving a solo group tears it down and clears the membership
+        r2 = client.post(f"{API}/family/leave", headers=h)
+        assert r2.status_code == 200 and r2.json() == {"left": True}
+        r3 = client.post(f"{API}/family/leave", headers=h)
+        assert r3.status_code == 400  # no longer in a group
+
+    def test_family_join_and_remote_clean(self, client):
+        owner_id, _, owner_tok, _ = _seed_user_and_session(prefix="TEST_FAMOWN_")
+        member_id, _, member_tok, _ = _seed_user_and_session(prefix="TEST_FAMMEM_")
+        try:
+            ho = {"Authorization": f"Bearer {owner_tok}"}
+            hm = {"Authorization": f"Bearer {member_tok}"}
+
+            code = client.post(f"{API}/family/create", headers=ho).json()["invite_code"]
+
+            r = client.post(f"{API}/family/join", headers=hm, json={"invite_code": code})
+            assert r.status_code == 200, r.text
+            joined = r.json()
+            assert joined["is_owner"] is False
+            assert len(joined["members"]) == 2
+
+            # owner's view now shows both members with live per-user stats
+            group = client.get(f"{API}/family/group", headers=ho).json()
+            assert {m["user_id"] for m in group["members"]} == {owner_id, member_id}
+
+            # owner can trigger a remote cleanup on the member's real account
+            r2 = client.post(f"{API}/family/remote-clean/{member_id}", headers=ho)
+            assert r2.status_code == 200, r2.text
+            assert r2.json()["reclaimed_mb"] > 0
+
+            # the member cannot remote-clean the owner (not an owner themself)
+            r3 = client.post(f"{API}/family/remote-clean/{owner_id}", headers=hm)
+            assert r3.status_code == 403
+
+        finally:
+            _cleanup_user(owner_id, owner_tok)
+            _cleanup_user(member_id, member_tok)
+
+    def test_join_rejects_unknown_invite_code(self, client, seeded_user):
+        h = {"Authorization": f"Bearer {seeded_user['token']}"}
+        r = client.post(f"{API}/family/join", headers=h, json={"invite_code": "FAM-NOPE99"})
+        assert r.status_code == 404  # fresh user, no group yet -> code lookup actually runs
 
     def test_streak_and_freeze_once_per_month(self, client, seeded_user):
         h = {"Authorization": f"Bearer {seeded_user['token']}"}
@@ -240,40 +287,37 @@ class TestSeededSessionFlow:
 
 # ==================== IDOR fix: two users must be isolated ====================
 class TestIDORScoping:
-    def test_two_users_isolated_family_and_history(self, client):
+    def test_two_unrelated_users_isolated_family_and_history(self, client):
         u1_id, _, u1_tok, _ = _seed_user_and_session(prefix="TEST_A_")
         u2_id, _, u2_tok, _ = _seed_user_and_session(prefix="TEST_B_")
         try:
             h1 = {"Authorization": f"Bearer {u1_tok}"}
             h2 = {"Authorization": f"Bearer {u2_tok}"}
 
-            # user 1 adds family & does a cleanup
-            r = client.post(f"{API}/family/member", headers=h1, json={"name": "OnlyForA", "device_type": "phone"})
+            # user 1 gets their own family group & does a cleanup
+            r = client.post(f"{API}/family/create", headers=h1)
             assert r.status_code == 200
-            member_a = r.json()["id"]
+            group_a_id = r.json()["id"]
             r = client.post(f"{API}/device/clean", headers=h1,
                             json={"categories": ["junk"], "reclaimable_mb": 111.0})
             assert r.status_code == 200
 
-            # user 2 should NOT see user 1's family members or history
-            r_fam = client.get(f"{API}/family", headers=h2)
+            # user 2's own family group is a completely separate group
+            r_fam = client.post(f"{API}/family/create", headers=h2)
             assert r_fam.status_code == 200
-            assert not any(m["id"] == member_a for m in r_fam.json()), \
-                "IDOR: user B sees user A's family member"
-            assert not any(m["name"] == "OnlyForA" for m in r_fam.json())
+            assert r_fam.json()["id"] != group_a_id
+            assert not any(m["user_id"] == u1_id for m in r_fam.json()["members"]), \
+                "IDOR: user B sees user A in their family group"
 
             r_hist = client.get(f"{API}/history", headers=h2)
             assert r_hist.status_code == 200
             assert not any(x["reclaimed_mb"] == 111.0 for x in r_hist.json()), \
                 "IDOR: user B sees user A's history entry"
 
-            # user 2 also cannot delete user 1's family member (endpoint scoped by owner)
-            r_del = client.delete(f"{API}/family/member/{member_a}", headers=h2)
-            # endpoint returns 200 with {"removed": ...} but should not actually delete
-            assert r_del.status_code == 200
-            r_check = client.get(f"{API}/family", headers=h1)
-            assert any(m["id"] == member_a for m in r_check.json()), \
-                "IDOR: user B was able to delete user A's family member"
+            # user 2 owns their own (separate) group, so u1 isn't a member of it
+            r_del = client.post(f"{API}/family/remote-clean/{u1_id}", headers=h2)
+            assert r_del.status_code == 404, \
+                "IDOR: user B was able to trigger a remote cleanup outside their own family group"
         finally:
             _cleanup_user(u1_id, u1_tok)
             _cleanup_user(u2_id, u2_tok)
@@ -395,8 +439,7 @@ class TestAccountDeletion:
             r = client.post(f"{API}/device/clean", headers=h,
                             json={"categories": ["junk"], "reclaimable_mb": 42.0})
             assert r.status_code == 200
-            r = client.post(f"{API}/family/member", headers=h,
-                            json={"name": "ToBeDeleted", "device_type": "phone"})
+            r = client.post(f"{API}/family/create", headers=h)
             assert r.status_code == 200
             r = client.get(f"{API}/referral", headers=h); assert r.status_code == 200
             r = client.get(f"{API}/reminders", headers=h); assert r.status_code == 200
@@ -413,7 +456,8 @@ class TestAccountDeletion:
             assert _db.users.find_one({"user_id": uid}) is None
             assert _db.user_sessions.count_documents({"user_id": uid}) == 0
             assert _db.cleanups.count_documents({"device_id": uid}) == 0
-            assert _db.family.count_documents({"owner_id": uid}) == 0
+            assert _db.family_memberships.count_documents({"user_id": uid}) == 0
+            assert _db.family_groups.count_documents({"owner_id": uid}) == 0  # solo owner -> group deleted
             assert _db.referrals.count_documents({"device_id": uid}) == 0
             assert _db.reminders.count_documents({"device_id": uid}) == 0
         finally:
@@ -429,18 +473,44 @@ class TestAccountDeletion:
                        json={"categories": ["junk"], "reclaimable_mb": 10.0})
             client.post(f"{API}/device/clean", headers=hb,
                        json={"categories": ["junk"], "reclaimable_mb": 20.0})
-            client.post(f"{API}/family/member", headers=hb, json={"name": "KeepMe", "device_type": "phone"})
+            b_group_id = client.post(f"{API}/family/create", headers=hb).json()["id"]
 
             # delete user A
             r = client.delete(f"{API}/auth/account", headers=ha)
             assert r.status_code == 200
 
-            # user B still fine
+            # user B still fine, own family group untouched
             r2 = client.get(f"{API}/auth/me", headers=hb)
             assert r2.status_code == 200 and r2.json()["user_id"] == b_id
             r3 = client.get(f"{API}/history", headers=hb)
             assert r3.status_code == 200 and any(x["reclaimed_mb"] == 20.0 for x in r3.json())
-            r4 = client.get(f"{API}/family", headers=hb)
-            assert r4.status_code == 200 and any(m["name"] == "KeepMe" for m in r4.json())
+            r4 = client.get(f"{API}/family/group", headers=hb)
+            assert r4.status_code == 200 and r4.json()["id"] == b_group_id
         finally:
             _cleanup_user(a_id, a_tok); _cleanup_user(b_id, b_tok)
+
+    def test_delete_owner_account_transfers_family_ownership(self, client):
+        # A genuinely new failure mode vs. the old name-label family model:
+        # deleting the owner's account must not orphan a group that still
+        # has real members in it — ownership should transfer instead.
+        owner_id, _, owner_tok, _ = _seed_user_and_session(prefix="TEST_FAMDEL_OWN_")
+        member_id, _, member_tok, _ = _seed_user_and_session(prefix="TEST_FAMDEL_MEM_")
+        try:
+            ho = {"Authorization": f"Bearer {owner_tok}"}
+            hm = {"Authorization": f"Bearer {member_tok}"}
+            group = client.post(f"{API}/family/create", headers=ho).json()
+            client.post(f"{API}/family/join", headers=hm, json={"invite_code": group["invite_code"]})
+
+            r = client.delete(f"{API}/auth/account", headers=ho)
+            assert r.status_code == 200
+
+            r2 = client.get(f"{API}/family/group", headers=hm)
+            assert r2.status_code == 200
+            body = r2.json()
+            assert body["id"] == group["id"]  # same group persists, not recreated
+            assert body["is_owner"] is True   # ownership transferred to the remaining member
+            assert len(body["members"]) == 1
+            assert body["members"][0]["user_id"] == member_id
+        finally:
+            _cleanup_user(owner_id, owner_tok)
+            _cleanup_user(member_id, member_tok)

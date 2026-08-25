@@ -13,8 +13,9 @@ Context:
   3) POST /api/push/cleanup-reminder (Bearer required):
         - 401 without token
         - 200 {"sent": false} with token (graceful)
-  4) POST /api/family/member (Bearer) still returns 200 and persists the
-     member even though the push call fails upstream (wrapped in try/except).
+  4) POST /api/family/join (Bearer) still returns 200 and persists the
+     membership even though the owner-notification push fails upstream
+     (wrapped in try/except).
   5) send_push validation:
         - >100 recipients raises ValueError
         - missing title/message raises ValueError
@@ -65,7 +66,8 @@ def _seed_user_and_session(prefix="TEST_PUSH_"):
 def _cleanup_user(user_id, token):
     _db.user_sessions.delete_many({"session_token": token})
     _db.users.delete_many({"user_id": user_id})
-    _db.family.delete_many({"owner_id": user_id})
+    _db.family_memberships.delete_many({"user_id": user_id})
+    _db.family_groups.delete_many({"owner_id": user_id})
     _db.cleanups.delete_many({"device_id": user_id})
 
 
@@ -151,23 +153,30 @@ class TestPushCleanupReminder:
         assert data.get("sent") is False, data
 
 
-# ==================== Family creation not broken by push failure ====================
-class TestFamilyAddNotBrokenByPush:
-    def test_add_family_member_still_succeeds(self, client, seeded_user):
-        h = {"Authorization": f"Bearer {seeded_user['token']}"}
-        r = client.post(f"{API}/family/member", headers=h,
-                        json={"name": "PushTestMember", "device_type": "phone"})
-        # Even though family-added push fails upstream, member is created (200)
-        assert r.status_code == 200, r.text
-        member = r.json()
-        assert member["name"] == "PushTestMember"
-        assert member["device_type"] == "phone"
-        mid = member["id"]
+# ==================== Family join not broken by push failure ====================
+class TestFamilyJoinNotBrokenByPush:
+    def test_join_still_succeeds_even_though_owner_push_fails(self, client):
+        owner_id, owner_tok, _ = _seed_user_and_session(prefix="TEST_PUSH_FAMOWN_")
+        member_id, member_tok, _ = _seed_user_and_session(prefix="TEST_PUSH_FAMMEM_")
+        try:
+            ho = {"Authorization": f"Bearer {owner_tok}"}
+            hm = {"Authorization": f"Bearer {member_tok}"}
+            code = client.post(f"{API}/family/create", headers=ho).json()["invite_code"]
 
-        # Verify persistence via GET
-        r2 = client.get(f"{API}/family", headers=h)
-        assert r2.status_code == 200
-        assert any(m["id"] == mid for m in r2.json()), "member not persisted after push failure"
+            # Joining notifies the owner via push, which fails upstream
+            # (placeholder key) — the join itself must still succeed (200).
+            r = client.post(f"{API}/family/join", headers=hm, json={"invite_code": code})
+            assert r.status_code == 200, r.text
+            assert any(m["user_id"] == member_id for m in r.json()["members"])
+
+            # Verify persistence via the owner's view
+            r2 = client.get(f"{API}/family/group", headers=ho)
+            assert r2.status_code == 200
+            assert any(m["user_id"] == member_id for m in r2.json()["members"]), \
+                "membership not persisted after push failure"
+        finally:
+            _cleanup_user(owner_id, owner_tok)
+            _cleanup_user(member_id, member_tok)
 
 
 # ==================== send_push() unit validation ====================
