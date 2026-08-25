@@ -78,4 +78,6 @@ export const api = {
   coachChat: (body: { message: string; health_score?: number; storage_used_pct?: number; battery_health_pct?: number }) =>
     req<any>('/coach/chat', { method: 'POST', body: JSON.stringify(body) }),
   clearCoach: () => req<any>('/coach/history', { method: 'DELETE' }),
+  coachInsights: () => req<any[]>('/coach/insights'),
+  ackCoachInsight: (key: string) => req<any>(`/coach/insights/${key}/ack`, { method: 'POST' }),
 };
