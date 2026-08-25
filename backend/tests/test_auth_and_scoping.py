@@ -109,6 +109,9 @@ PROTECTED = [
     ("GET", "/pulse/daily", None),
     # Home Screen Widget (live):
     ("GET", "/widget/summary", None),
+    # Smart Nudges:
+    ("GET", "/nudges/active", None),
+    ("POST", "/nudges/storage_reclaim/dismiss", None),
 ]
 
 PUBLIC = [
