@@ -341,7 +341,7 @@ def _pulse_headline(score: int, cleaned_last_24h: bool, storage_pct: int) -> str
 
 
 NUDGE_DISMISS_COOLDOWN_HOURS = 24
-NUDGE_TYPES = {"storage_reclaim", "security"}
+NUDGE_TYPES = {"storage_reclaim", "security", "storage_forecast"}
 
 
 def _estimate_reclaimable_mb(cleanups: list) -> float:
@@ -368,19 +368,34 @@ def _estimate_reclaimable_mb(cleanups: list) -> float:
     return round(min(3600.0, hours_since * 35.0), 1)
 
 
-def _build_nudge_candidates(seed: DeviceHealth, reclaimable_mb: float) -> list:
+def _build_nudge_candidates(seed: DeviceHealth, reclaimable_mb: float, forecast: Optional[dict] = None) -> list:
     """Smart Nudges: surface at most one nudge, and only when a condition
     actually crosses a threshold worth interrupting the user for — not on
     every open. Candidates are ranked by priority (lower = more urgent).
 
-    Only two conditions are wired up today, both driven by real per-user
-    state: a meaningful amount of reclaimable junk (the flagship "You could
-    reclaim 2.3 GB right now" case), and an open security finding (acts as
-    an always-available fallback nudge under the app's current simulated
-    baseline, which is a deliberately simpler starting set than a full
-    multi-signal nudge engine — easy to extend with more candidates later)."""
+    Three conditions are wired up today, all driven by real per-user state:
+    a genuinely time-sensitive storage forecast (Predictive Storage — only
+    fires once there's real cleanup history to project a trend from, and
+    outranks the other two since "you'll run out of space in N days" is more
+    urgent than a generic reclaim suggestion), a meaningful amount of
+    reclaimable junk (the flagship "You could reclaim 2.3 GB right now"
+    case), and an open security finding (acts as an always-available fallback
+    nudge under the app's current simulated baseline, which is a deliberately
+    simpler starting set than a full multi-signal nudge engine — easy to
+    extend with more candidates later)."""
     security_ok = "issue" not in seed.security_status.lower()
     candidates = []
+
+    if forecast and forecast.get("has_trend") and forecast["days_until_full"] <= FORECAST_ALERT_DAYS:
+        days = forecast["days_until_full"]
+        candidates.append(Nudge(
+            type="storage_forecast",
+            title="Storage running low",
+            message=f"At this rate you'll run out of space in {days} day{'s' if days != 1 else ''}.",
+            cta_label="Fix now",
+            cta_route="/forecast",
+            priority=0,
+        ))
 
     if reclaimable_mb >= 1500:
         gb = round(reclaimable_mb / 1024, 1)
@@ -996,9 +1011,45 @@ async def get_health_trend(user=Depends(get_current_user)):
         "current": last,
     }
 
-@api_router.get("/forecast")
-async def get_forecast(user=Depends(get_current_user)):
-    device_id = user["user_id"]
+# ---------- Predictive Storage ----------
+# The daily fill rate is no longer a fixed constant: it's derived from how
+# long it's been since the user's last cleanup (the same idle-time signal
+# Smart Nudges uses for its reclaimable-junk estimate). A user who cleans up
+# regularly gets a slow, comfortable projection; a user who has let junk pile
+# up unchecked for weeks gets a fast one — which is what makes "at this rate
+# you'll run out of space in N days" an honest, personalized warning instead
+# of a canned number. Deterministic and capped, so it stays fully testable.
+DEFAULT_DAILY_GROWTH_GB = 0.3  # used only when there's no cleanup history yet to project from
+FORECAST_ALERT_DAYS = 14
+
+
+def _estimate_daily_growth_gb(cleanups: list) -> Optional[float]:
+    """Returns None when there isn't enough history yet to project a trend
+    (no cleanups on record) — mirrors the same "not enough signal" gating used
+    elsewhere (Coach's pattern insight, Nudges' storage_critical decision)."""
+    if not cleanups:
+        return None
+    now = datetime.now(timezone.utc)
+    last_cleanup_dt = None
+    for d in cleanups:
+        try:
+            dt = datetime.fromisoformat(d["completed_at"])
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if last_cleanup_dt is None or dt > last_cleanup_dt:
+            last_cleanup_dt = dt
+    if last_cleanup_dt is None:
+        return None
+    idle_days = max(0.0, (now - last_cleanup_dt).total_seconds() / 86400)
+    # 0.3 GB/day baseline, climbing toward 3.0 GB/day the longer junk/cache
+    # has been left unchecked, capped at 45 idle days.
+    growth = 0.3 + min(2.7, idle_days * (2.7 / 45))
+    return round(growth, 2)
+
+
+async def _compute_forecast(device_id: str) -> dict:
     total_gb = 128.0
     used_gb = 94.2  # seed baseline
 
@@ -1008,7 +1059,8 @@ async def get_forecast(user=Depends(get_current_user)):
     used_gb = max(20.0, used_gb - reclaimed_gb)
     free_gb = round(total_gb - used_gb, 1)
 
-    daily_growth_gb = 0.72  # typical media/cache accumulation
+    trend_growth = _estimate_daily_growth_gb(docs)
+    daily_growth_gb = trend_growth if trend_growth is not None else DEFAULT_DAILY_GROWTH_GB
     days_until_full = int(free_gb / daily_growth_gb) if daily_growth_gb > 0 else 999
     projected_full = (datetime.now(timezone.utc) + timedelta(days=days_until_full))
 
@@ -1031,7 +1083,34 @@ async def get_forecast(user=Depends(get_current_user)):
         "days_until_full": days_until_full,
         "projected_full_date": projected_full.strftime("%b %d, %Y"),
         "projection": projection,
+        "has_trend": trend_growth is not None,
     }
+
+
+@api_router.get("/forecast")
+async def get_forecast(user=Depends(get_current_user)):
+    return await _compute_forecast(user["user_id"])
+
+
+@api_router.post("/forecast/quick-fix")
+async def forecast_quick_fix(user=Depends(get_current_user)):
+    """The roadmap's "one-tap fix": runs an immediate simulated cleanup sized
+    to the user's own reclaimable-junk estimate (same estimator Smart Nudges
+    uses), no category picker or extra screen required, and returns the
+    freshly-recomputed forecast so the caller can show the improvement."""
+    user_id = user["user_id"]
+    cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
+    reclaimed_mb = _estimate_reclaimable_mb(cleanups)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "device_id": user_id,
+        "categories": ["Predictive quick fix"],
+        "reclaimed_mb": reclaimed_mb,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.cleanups.insert_one(doc.copy())
+    forecast = await _compute_forecast(user_id)
+    return {"reclaimed_mb": reclaimed_mb, "forecast": forecast}
 
 # ---------- Daily Pulse Check ----------
 # A lightweight, non-LLM "morning health score" — one glance, cached per
@@ -1116,7 +1195,8 @@ async def get_active_nudge(user=Depends(get_current_user)):
     cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
     reclaimable_mb = _estimate_reclaimable_mb(cleanups)
     seed = _seed_health()
-    candidates = _build_nudge_candidates(seed, reclaimable_mb)
+    forecast = await _compute_forecast(user_id)
+    candidates = _build_nudge_candidates(seed, reclaimable_mb, forecast)
     if not candidates:
         return None
 
