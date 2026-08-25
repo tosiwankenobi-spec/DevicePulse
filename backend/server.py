@@ -168,6 +168,18 @@ class BatteryOptimizeResult(BaseModel):
     level_gained: int
     state: BatteryStateOut
 
+class MemoryStateOut(BaseModel):
+    ram_used_pct: int
+    ram_total_gb: float
+    apps_running: List[dict]
+    last_boosted_at: Optional[str] = None
+    boosts_run: int = 0
+
+class MemoryBoostResult(BaseModel):
+    apps_closed: int
+    ram_freed_pct: int
+    state: MemoryStateOut
+
 class SecurityFinding(BaseModel):
     id: str
     source: str             # "session" | "device"
@@ -621,6 +633,7 @@ async def delete_account(user=Depends(get_current_user)):
     await db.security_scan_state.delete_many({"user_id": uid})
     await db.battery_state.delete_many({"user_id": uid})
     await db.large_files.delete_many({"user_id": uid})
+    await db.memory_state.delete_many({"user_id": uid})
     await _leave_family_group(uid)
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
@@ -2343,6 +2356,100 @@ async def delete_large_files(req: LargeFileDeleteRequest, user=Depends(get_curre
     )
 
 
+# ==================== Memory/RAM Boost ====================
+# The scan hub (app/(tabs)/scan.tsx) advertises a distinct "Memory Cleanup"
+# tool ("Free up RAM instantly"), but it has never had any real identity —
+# its tile just rerouted to /smart-scan, and the only "RAM" concept
+# anywhere in the backend was a single hardcoded ram_used_pct=72 constant
+# baked into _seed_health() (the shared device-health snapshot reused by
+# Daily Pulse Check, the widget, and the Coach — deliberately left alone
+# here, since making that shared baseline stateful would risk breaking the
+# consistency those other features depend on). This section gives Memory
+# Boost its own real per-user state and action, the same way Battery Health
+# & Optimizer got its own state independent of that baseline.
+#
+# No Pro gate: like Large File Cleanup, paywall.tsx has never advertised a
+# "Memory"/RAM perk, so there's no promise to enforce — free for everyone.
+MEMORY_APP_POOL = [
+    {"name": "Chrome", "icon": "🌐"},
+    {"name": "Instagram", "icon": "📷"},
+    {"name": "Spotify", "icon": "🎵"},
+    {"name": "Maps", "icon": "🗺️"},
+    {"name": "Gmail", "icon": "✉️"},
+    {"name": "TikTok", "icon": "🎬"},
+    {"name": "Slack", "icon": "💬"},
+    {"name": "Camera", "icon": "📸"},
+]
+MEMORY_BOOST_MAX_APPS = 3
+RAM_TOTAL_GB_CHOICES = [4.0, 6.0, 8.0]
+
+
+async def _get_or_init_memory_state(uid: str) -> dict:
+    doc = await db.memory_state.find_one({"user_id": uid})
+    if doc:
+        return doc
+    chosen = random.sample(MEMORY_APP_POOL, k=random.randint(4, 6))
+    apps_running = [{**app, "ram_mb": random.randint(80, 620)} for app in chosen]
+    apps_running.sort(key=lambda a: a["ram_mb"], reverse=True)
+    doc = {
+        "user_id": uid,
+        "ram_used_pct": random.randint(58, 88),
+        "ram_total_gb": random.choice(RAM_TOTAL_GB_CHOICES),
+        "apps_running": apps_running,
+        "last_boosted_at": None,
+        "boosts_run": 0,
+    }
+    await db.memory_state.update_one({"user_id": uid}, {"$set": doc}, upsert=True)
+    return doc
+
+
+def _memory_state_out(doc: dict) -> MemoryStateOut:
+    return MemoryStateOut(
+        ram_used_pct=doc["ram_used_pct"], ram_total_gb=doc["ram_total_gb"],
+        apps_running=doc["apps_running"], last_boosted_at=doc.get("last_boosted_at"),
+        boosts_run=doc.get("boosts_run", 0),
+    )
+
+
+@api_router.get("/device/memory", response_model=MemoryStateOut)
+async def get_memory_state(user=Depends(get_current_user)):
+    """Generates a user's initial RAM state once, lazily, on first read, and
+    persists it — same lazy-generate-and-persist pattern as Battery Health &
+    Optimizer, so revisiting this screen shows stable numbers."""
+    doc = await _get_or_init_memory_state(user["user_id"])
+    return _memory_state_out(doc)
+
+
+@api_router.post("/device/memory/boost", response_model=MemoryBoostResult)
+async def boost_memory(user=Depends(get_current_user)):
+    """Closes the top RAM-consuming background apps and frees the
+    corresponding share of used RAM. Free for everyone — no Pro gate."""
+    uid = user["user_id"]
+    doc = await _get_or_init_memory_state(uid)
+
+    apps = sorted(doc["apps_running"], key=lambda a: a["ram_mb"], reverse=True)
+    to_close = apps[:MEMORY_BOOST_MAX_APPS]
+    remaining = apps[MEMORY_BOOST_MAX_APPS:]
+
+    total_ram_mb = doc["ram_total_gb"] * 1024
+    freed_pct = round(sum(a["ram_mb"] for a in to_close) / total_ram_mb * 100) if to_close else 0
+    new_pct = max(15, doc["ram_used_pct"] - freed_pct)
+    actual_freed = doc["ram_used_pct"] - new_pct
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    update = {
+        "ram_used_pct": new_pct,
+        "apps_running": remaining,
+        "last_boosted_at": now_iso,
+        "boosts_run": doc.get("boosts_run", 0) + 1,
+    }
+    await db.memory_state.update_one({"user_id": uid}, {"$set": update})
+    doc.update(update)
+    return MemoryBoostResult(
+        apps_closed=len(to_close), ram_freed_pct=actual_freed, state=_memory_state_out(doc),
+    )
+
+
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     if not EMERGENT_LLM_KEY:
@@ -2748,6 +2855,7 @@ async def create_indexes():
         await db.battery_state.create_index("user_id", unique=True)
         await db.large_files.create_index("user_id")
         await db.large_files.create_index([("user_id", 1), ("status", 1)])
+        await db.memory_state.create_index("user_id", unique=True)
     except Exception:
         logging.exception("Index creation failed")
 
