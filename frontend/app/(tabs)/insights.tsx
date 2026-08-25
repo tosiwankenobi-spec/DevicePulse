@@ -7,13 +7,17 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
+import { useSubscription } from '@/src/lib/revenuecat';
 
 type Tab = 'storage' | 'battery' | 'security';
 
 export default function Insights() {
+  const router = useRouter();
+  const { isSubscribed } = useSubscription();
   const [tab, setTab] = useState<Tab>('storage');
   const [storage, setStorage] = useState<any>(null);
   const [battery, setBattery] = useState<any>(null);
+  const [batteryBusy, setBatteryBusy] = useState(false);
   const [security, setSecurity] = useState<any>(null);
   const [securityBusy, setSecurityBusy] = useState<string | null>(null); // finding id (or 'scan') in flight
 
@@ -26,6 +30,20 @@ export default function Insights() {
     api.battery().then(setBattery).catch(() => {});
     loadSecurity();
   }, [loadSecurity]);
+
+  const onOptimizeBattery = async () => {
+    if (!isSubscribed) { router.push('/paywall'); return; }
+    setBatteryBusy(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    try {
+      const res = await api.optimizeBattery();
+      setBattery(res.state);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setBatteryBusy(false);
+    }
+  };
 
   const onSecurityScan = async () => {
     setSecurityBusy('scan');
@@ -100,7 +118,14 @@ export default function Insights() {
             storage ? <StorageView data={storage} /> : <Loader />
           )}
           {tab === 'battery' && (
-            battery ? <BatteryView data={battery} /> : <Loader />
+            battery ? (
+              <BatteryView
+                data={battery}
+                isPro={isSubscribed}
+                busy={batteryBusy}
+                onOptimize={onOptimizeBattery}
+              />
+            ) : <Loader />
           )}
           {tab === 'security' && (
             security ? (
@@ -167,7 +192,14 @@ const StorageView = ({ data }: { data: any }) => {
   );
 };
 
-const BatteryView = ({ data }: { data: any }) => (
+type BatteryViewProps = {
+  data: any;
+  isPro: boolean;
+  busy: boolean;
+  onOptimize: () => void;
+};
+
+const BatteryView = ({ data, isPro, busy, onOptimize }: BatteryViewProps) => (
   <View>
     <View style={styles.card}>
       <Text style={styles.cardLabel}>Battery Level</Text>
@@ -189,19 +221,47 @@ const BatteryView = ({ data }: { data: any }) => (
       </View>
     </View>
 
-    <Text style={styles.sectionTitle}>Top Drain Apps</Text>
-    <View style={styles.card}>
-      {data.drain_apps.map((app: any, i: number) => (
-        <View key={i} style={styles.appRow}>
-          <Text style={{ fontSize: 20 }}>{app.icon}</Text>
-          <Text style={styles.appName}>{app.name}</Text>
-          <View style={styles.appPctBar}>
-            <View style={[styles.appPctFill, { width: `${app.pct * 4}%` }]} />
-          </View>
-          <Text style={styles.appPct}>{app.pct}%</Text>
-        </View>
-      ))}
+    <View style={styles.optimizeRow}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.optimizeTitle}>Battery Optimizer</Text>
+        <Text style={styles.helperText}>
+          {data.optimizations_run > 0
+            ? `Optimized ${data.optimizations_run}x • restricts your highest-drain apps`
+            : 'Restrict background activity for your highest-drain apps'}
+        </Text>
+      </View>
+      <Pressable
+        style={[styles.optimizeBtn, !isPro && styles.optimizeBtnLocked]}
+        onPress={onOptimize}
+        disabled={busy}
+        testID="battery-optimize-button"
+      >
+        {busy ? (
+          <ActivityIndicator size="small" color={theme.color.onBrand} />
+        ) : (
+          <>
+            {!isPro && <Ionicons name="lock-closed" size={12} color={theme.color.onBrand} />}
+            <Text style={styles.optimizeBtnText}>Optimize now</Text>
+          </>
+        )}
+      </Pressable>
     </View>
+
+    <Text style={styles.sectionTitle}>{data.drain_apps.length > 0 ? 'Top Drain Apps' : 'No high-drain apps remaining'}</Text>
+    {data.drain_apps.length > 0 && (
+      <View style={styles.card}>
+        {data.drain_apps.map((app: any, i: number) => (
+          <View key={i} style={styles.appRow}>
+            <Text style={{ fontSize: 20 }}>{app.icon}</Text>
+            <Text style={styles.appName}>{app.name}</Text>
+            <View style={styles.appPctBar}>
+              <View style={[styles.appPctFill, { width: `${app.pct * 4}%` }]} />
+            </View>
+            <Text style={styles.appPct}>{app.pct}%</Text>
+          </View>
+        ))}
+      </View>
+    )}
   </View>
 );
 
@@ -306,6 +366,11 @@ const styles = StyleSheet.create({
   appPctBar: { flex: 1, height: 6, borderRadius: 3, backgroundColor: theme.color.surface3, overflow: 'hidden' },
   appPctFill: { height: '100%', backgroundColor: theme.color.warning, borderRadius: 3 },
   appPct: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '600', width: 34, textAlign: 'right' },
+  optimizeRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.md, borderWidth: 1, borderColor: theme.color.border, marginBottom: theme.space.md },
+  optimizeTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
+  optimizeBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 36, paddingHorizontal: 14, borderRadius: theme.radius.pill, backgroundColor: theme.color.warning, justifyContent: 'center' },
+  optimizeBtnLocked: { backgroundColor: theme.color.surface3, borderWidth: 1, borderColor: theme.color.border },
+  optimizeBtnText: { color: theme.color.onBrand, fontSize: 13, fontWeight: '700' },
   securityHero: { borderRadius: theme.radius.lg, padding: theme.space.xl, alignItems: 'center', marginBottom: theme.space.md },
   securityHeroTitle: { color: theme.color.onBrand, fontSize: 20, fontWeight: '800', marginTop: 10 },
   securityHeroSub: { color: 'rgba(2,44,34,0.8)', fontSize: 12, marginTop: 4, textAlign: 'center' },
