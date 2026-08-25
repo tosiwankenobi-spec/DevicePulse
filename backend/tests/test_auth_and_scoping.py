@@ -84,6 +84,7 @@ PROTECTED = [
     ("GET", "/history", None),
     ("GET", "/streak", None),
     ("GET", "/forecast", None),
+    ("POST", "/forecast/quick-fix", None),
     ("GET", "/device/health-trend", None),
     ("GET", "/reminders", None),
     ("PUT", "/reminders", {"device_id": "x", "low_storage": True, "weekly_cleanup": True,
