@@ -231,6 +231,22 @@ class CleanupReport(BaseModel):
     top_category: Optional[str] = None
     days_until_full: int
 
+class EntitlementSync(BaseModel):
+    is_pro: bool
+
+class AutoCleanSchedule(BaseModel):
+    enabled: bool = True
+    frequency: str  # "daily" | "weekly"
+    day_of_week: Optional[int] = None  # 0=Monday..6=Sunday; required when weekly
+    categories: List[str]
+    last_run_at: Optional[str] = None
+
+class AutoCleanRunResult(BaseModel):
+    ran: bool
+    reason: Optional[str] = None
+    reclaimed_mb: Optional[float] = None
+    categories: Optional[List[str]] = None
+
 class CoachChatRequest(BaseModel):
     message: str
     health_score: Optional[int] = None
@@ -559,6 +575,7 @@ async def delete_account(user=Depends(get_current_user)):
     await db.reminders.delete_many({"device_id": uid})
     await db.freezes.delete_many({"device_id": uid})
     await db.cleanup_reports.delete_many({"user_id": uid})
+    await db.autoclean_schedules.delete_many({"user_id": uid})
     await _leave_family_group(uid)
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
@@ -1663,6 +1680,172 @@ async def view_public_report_page(share_code: str):
     return HTMLResponse(content=page)
 
 
+# ==================== Entitlements (Pro) ====================
+# This sandbox has no RevenueCat secret key or webhook receiver configured,
+# so the backend cannot independently verify a purchase against RevenueCat's
+# own servers. Given that limit (per explicit user choice — see project
+# notes), this stores a real, persisted, server-enforced `is_pro` flag on the
+# user record instead of trusting a value passed on each individual request:
+# the client (which holds a genuine RevenueCat subscription result) reports
+# it once via POST /entitlements/sync, and every Pro-gated endpoint below
+# checks this STORED flag. A production build would close the remaining gap
+# with a RevenueCat webhook that updates this same flag from RevenueCat's own
+# servers instead of the client self-reporting it.
+
+@api_router.get("/entitlements/me")
+async def get_my_entitlement(user=Depends(get_current_user)):
+    return {"is_pro": bool(user.get("is_pro", False))}
+
+@api_router.post("/entitlements/sync")
+async def sync_entitlement(body: EntitlementSync, user=Depends(get_current_user)):
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"is_pro": body.is_pro}})
+    return {"is_pro": body.is_pro}
+
+
+# ==================== Auto-Clean Scheduling (Pro-only) ====================
+AUTOCLEAN_ALLOWED_CATEGORIES = ["Junk files", "Duplicates", "App cache"]
+# "Large files" is deliberately excluded from what auto-clean is allowed to
+# touch — it's the one category likely to contain something a user actually
+# wants to keep (a big saved video, a download), so removing it without a
+# look first is too aggressive for something that runs with no user present.
+AUTOCLEAN_DAILY_COOLDOWN_HOURS = 20
+AUTOCLEAN_WEEKLY_COOLDOWN = timedelta(days=6, hours=12)
+
+
+def _validate_autoclean_schedule(body: "AutoCleanSchedule"):
+    if body.frequency not in ("daily", "weekly"):
+        raise HTTPException(400, "frequency must be 'daily' or 'weekly'")
+    if body.frequency == "weekly":
+        if body.day_of_week is None or not (0 <= body.day_of_week <= 6):
+            raise HTTPException(400, "day_of_week (0=Monday..6=Sunday) is required for a weekly schedule")
+    if not body.categories:
+        raise HTTPException(400, "Choose at least one category to auto-clean")
+    bad = [c for c in body.categories if c not in AUTOCLEAN_ALLOWED_CATEGORIES]
+    if bad:
+        raise HTTPException(400, f"Unsupported categories for auto-clean: {bad}. Allowed: {AUTOCLEAN_ALLOWED_CATEGORIES}")
+
+
+@api_router.get("/autoclean/schedule", response_model=Optional[AutoCleanSchedule])
+async def get_autoclean_schedule(user=Depends(get_current_user)):
+    """Nullable by design, same reasoning as GET /family/group and
+    GET /reports/mine: never silently create a schedule on a plain read."""
+    doc = await db.autoclean_schedules.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not doc:
+        return None
+    return AutoCleanSchedule(
+        enabled=doc.get("enabled", True),
+        frequency=doc["frequency"],
+        day_of_week=doc.get("day_of_week"),
+        categories=doc.get("categories", []),
+        last_run_at=doc.get("last_run_at"),
+    )
+
+
+@api_router.put("/autoclean/schedule", response_model=AutoCleanSchedule)
+async def save_autoclean_schedule(body: AutoCleanSchedule, user=Depends(get_current_user)):
+    """Upsert (mirrors PUT /reminders) — Pro-gated using the STORED
+    entitlement flag, never a value the caller supplies."""
+    if not user.get("is_pro", False):
+        raise HTTPException(403, "Auto-Clean Scheduling is a Pro feature")
+    _validate_autoclean_schedule(body)
+    user_id = user["user_id"]
+    existing = await db.autoclean_schedules.find_one({"user_id": user_id})
+    last_run_at = existing.get("last_run_at") if existing else None
+    doc = {
+        "user_id": user_id,
+        "enabled": body.enabled,
+        "frequency": body.frequency,
+        "day_of_week": body.day_of_week if body.frequency == "weekly" else None,
+        "categories": body.categories,
+        "last_run_at": last_run_at,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.autoclean_schedules.update_one({"user_id": user_id}, {"$set": doc}, upsert=True)
+    return AutoCleanSchedule(
+        enabled=doc["enabled"], frequency=doc["frequency"], day_of_week=doc["day_of_week"],
+        categories=doc["categories"], last_run_at=doc["last_run_at"],
+    )
+
+
+@api_router.delete("/autoclean/schedule")
+async def delete_autoclean_schedule(user=Depends(get_current_user)):
+    """Deleting/turning off a schedule is never Pro-gated — a lapsed
+    subscriber must still be able to remove their own configuration."""
+    res = await db.autoclean_schedules.delete_one({"user_id": user["user_id"]})
+    return {"deleted": res.deleted_count > 0}
+
+
+def _autoclean_is_due(schedule: dict, now: datetime) -> bool:
+    last_run_at = schedule.get("last_run_at")
+    last_run_dt = None
+    if last_run_at:
+        try:
+            last_run_dt = datetime.fromisoformat(last_run_at)
+            if last_run_dt.tzinfo is None:
+                last_run_dt = last_run_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            last_run_dt = None
+
+    if schedule["frequency"] == "daily":
+        return last_run_dt is None or (now - last_run_dt) >= timedelta(hours=AUTOCLEAN_DAILY_COOLDOWN_HOURS)
+
+    # weekly: only fires on the chosen weekday, and not sooner than ~once a week
+    if now.weekday() != schedule.get("day_of_week"):
+        return False
+    return last_run_dt is None or (now - last_run_dt) >= AUTOCLEAN_WEEKLY_COOLDOWN
+
+
+@api_router.post("/autoclean/run-if-due", response_model=AutoCleanRunResult)
+async def run_autoclean_if_due(user=Depends(get_current_user)):
+    """The 'lazy cron' pattern used throughout this app (Daily Pulse Check,
+    Coach Insights, Nudges): there's no real background scheduler in this
+    sandbox, so 'due' is checked and acted on whenever the client calls this
+    (e.g. once on app open) — the same way every other 'scheduled' thing
+    here actually works under the hood."""
+    user_id = user["user_id"]
+    schedule = await db.autoclean_schedules.find_one({"user_id": user_id})
+    if not schedule:
+        return AutoCleanRunResult(ran=False, reason="no_schedule")
+    if not schedule.get("enabled", True):
+        return AutoCleanRunResult(ran=False, reason="disabled")
+    if not user.get("is_pro", False):
+        # The schedule itself is left alone (not deleted) so it resumes
+        # exactly as configured if the user re-subscribes.
+        return AutoCleanRunResult(ran=False, reason="not_pro")
+
+    now = datetime.now(timezone.utc)
+    if not _autoclean_is_due(schedule, now):
+        return AutoCleanRunResult(ran=False, reason="not_due")
+
+    cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
+    reclaimed_mb = _estimate_reclaimable_mb(cleanups)
+    categories = schedule["categories"]
+    await db.cleanups.insert_one({
+        "id": str(uuid.uuid4()),
+        "device_id": user_id,
+        "categories": categories,
+        "reclaimed_mb": reclaimed_mb,
+        "completed_at": now.isoformat(),
+    })
+    await db.autoclean_schedules.update_one(
+        {"user_id": user_id}, {"$set": {"last_run_at": now.isoformat()}}
+    )
+    try:
+        await send_push(
+            recipients=[user_id],
+            data={
+                "title": "Auto-Clean ran for you",
+                "message": f"Freed {round(reclaimed_mb / 1024, 1)} GB automatically — no tap needed.",
+                "action_url": "/(tabs)",
+            },
+            idempotency_key=f"autoclean-{user_id}-{now.date().isoformat()}",
+        )
+    except Exception as e:
+        logging.warning(f"Auto-clean push failed (non-blocking): {e}")
+
+    return AutoCleanRunResult(ran=True, reclaimed_mb=reclaimed_mb, categories=categories)
+
+
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     if not EMERGENT_LLM_KEY:
@@ -2060,6 +2243,7 @@ async def create_indexes():
         await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
         await db.cleanup_reports.create_index("share_code", unique=True)
         await db.cleanup_reports.create_index("user_id")
+        await db.autoclean_schedules.create_index("user_id", unique=True)
     except Exception:
         logging.exception("Index creation failed")
 
