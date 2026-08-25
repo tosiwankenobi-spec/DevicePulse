@@ -197,15 +197,24 @@ class ReminderPrefs(BaseModel):
     after_downloads: bool = True
     battery_alerts: bool = False
 
-class FamilyMember(BaseModel):
-    id: str
+class FamilyMemberSnapshot(BaseModel):
+    user_id: str
     name: str
-    device_type: str  # phone, tablet
-    added_at: str
+    is_owner: bool
+    joined_at: str
+    score: int
+    status: str  # Excellent | Good | Needs Attention | Poor
+    streak_weeks: int
+    days_until_full: int
 
-class AddMemberRequest(BaseModel):
-    name: str
-    device_type: str = "phone"
+class FamilyGroup(BaseModel):
+    id: str
+    invite_code: str
+    is_owner: bool
+    members: List[FamilyMemberSnapshot]
+
+class JoinFamilyRequest(BaseModel):
+    invite_code: str
 
 class CoachChatRequest(BaseModel):
     message: str
@@ -534,7 +543,7 @@ async def delete_account(user=Depends(get_current_user)):
     await db.referrals.delete_many({"device_id": uid})
     await db.reminders.delete_many({"device_id": uid})
     await db.freezes.delete_many({"device_id": uid})
-    await db.family.delete_many({"owner_id": uid})
+    await _leave_family_group(uid)
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
     return {"deleted": True}
@@ -1223,48 +1232,199 @@ async def dismiss_nudge(nudge_type: str, user=Depends(get_current_user)):
     )
     return {"dismissed": True, "type": nudge_type}
 
-@api_router.get("/family", response_model=List[FamilyMember])
-async def get_family(user=Depends(get_current_user)):
-    device_id = user["user_id"]
-    docs = await db.family.find({"owner_id": device_id}).sort("added_at", 1).to_list(50)
-    return [
-        FamilyMember(id=d["id"], name=d["name"], device_type=d["device_type"], added_at=d["added_at"])
-        for d in docs
-    ]
+# ---------- Family Dashboard: real linked accounts, not name labels ----------
+# Each member is a genuine DevicePulse account that joined via an invite code
+# — not a free-text name the owner typed in — so the owner's dashboard shows
+# each member's actual live health score, streak, and storage forecast
+# (pulled from that member's own real per-user data), and the owner can
+# trigger a real one-tap remote cleanup on a member's account. A user belongs
+# to at most one family group at a time, either as its owner or a member.
+FAMILY_MAX_MEMBERS = 5
 
-@api_router.post("/family/member", response_model=FamilyMember)
-async def add_family_member(req: AddMemberRequest, user=Depends(get_current_user)):
-    device_id = user["user_id"]
-    count = await db.family.count_documents({"owner_id": device_id})
-    if count >= 5:
-        raise HTTPException(400, "Family plan supports up to 5 devices")
-    name = (req.name or "").strip()[:40]  # cap length to prevent oversized input
-    if not name:
-        raise HTTPException(400, "Name is required")
-    device_type = req.device_type if req.device_type in ("phone", "tablet") else "phone"
-    member = {
-        "id": str(uuid.uuid4()),
-        "owner_id": device_id,
-        "name": name,
-        "device_type": device_type,
-        "added_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.family.insert_one(member.copy())
+
+async def _generate_unique_invite_code() -> str:
+    for _ in range(5):
+        code = f"FAM-{uuid.uuid4().hex[:6].upper()}"
+        if not await db.family_groups.find_one({"invite_code": code}):
+            return code
+    return f"FAM-{uuid.uuid4().hex[:8].upper()}"  # fallback; collision here is astronomically unlikely
+
+
+async def _build_family_snapshot(group_id: str) -> list:
+    memberships = await db.family_memberships.find({"group_id": group_id}).sort("joined_at", 1).to_list(FAMILY_MAX_MEMBERS)
+    out = []
+    for m in memberships:
+        uid = m["user_id"]
+        u = await db.users.find_one({"user_id": uid}, {"_id": 0})
+        cleanups = await db.cleanups.find({"device_id": uid}).to_list(1000)
+        score, _cleaned_last_24h = _compute_daily_pulse_score(cleanups)
+        streak_data = await _compute_streak_data(uid)
+        forecast = await _compute_forecast(uid)
+        out.append(FamilyMemberSnapshot(
+            user_id=uid,
+            name=(u.get("name") if u else None) or "Unknown",
+            is_owner=m["role"] == "owner",
+            joined_at=m["joined_at"],
+            score=score,
+            status=_pulse_status_band(score),
+            streak_weeks=streak_data["current_streak_weeks"],
+            days_until_full=forecast["days_until_full"],
+        ))
+    return out
+
+
+async def _leave_family_group(user_id: str) -> bool:
+    """Removes user_id from their family group, if any. If they were the
+    owner and other members remain, ownership transfers to the
+    earliest-joined remaining member instead of orphaning the group; if they
+    were the sole member, the group is deleted. Returns False if they weren't
+    in a group. Shared by POST /family/leave and account deletion."""
+    membership = await db.family_memberships.find_one({"user_id": user_id})
+    if not membership:
+        return False
+    if membership["role"] == "owner":
+        others = await db.family_memberships.find(
+            {"group_id": membership["group_id"], "user_id": {"$ne": user_id}}
+        ).sort("joined_at", 1).to_list(FAMILY_MAX_MEMBERS)
+        if others:
+            new_owner_id = others[0]["user_id"]
+            await db.family_memberships.update_one({"user_id": new_owner_id}, {"$set": {"role": "owner"}})
+            await db.family_groups.update_one({"id": membership["group_id"]}, {"$set": {"owner_id": new_owner_id}})
+        else:
+            await db.family_groups.delete_one({"id": membership["group_id"]})
+    await db.family_memberships.delete_one({"user_id": user_id})
+    return True
+
+
+@api_router.get("/family/group", response_model=Optional[FamilyGroup])
+async def get_family_group(user=Depends(get_current_user)):
+    """Returns None if the user isn't in a family plan yet — deliberately NOT
+    auto-created here. Auto-creating on a plain read would silently enroll
+    every user in their own solo group, which would then block them from
+    joining someone else's family without first "leaving" a group they never
+    knew they had. POST /family/create is the explicit action instead."""
+    user_id = user["user_id"]
+    membership = await db.family_memberships.find_one({"user_id": user_id})
+    if not membership:
+        return None
+    group = await db.family_groups.find_one({"id": membership["group_id"]}, {"_id": 0})
+    members = await _build_family_snapshot(group["id"])
+    return FamilyGroup(
+        id=group["id"],
+        invite_code=group["invite_code"],
+        is_owner=membership["role"] == "owner",
+        members=members,
+    )
+
+
+@api_router.post("/family/create", response_model=FamilyGroup)
+async def create_family_group(user=Depends(get_current_user)):
+    user_id = user["user_id"]
+    if await db.family_memberships.find_one({"user_id": user_id}):
+        raise HTTPException(400, "You're already in a family plan")
+    group_id = str(uuid.uuid4())
+    invite_code = await _generate_unique_invite_code()
+    await db.family_groups.insert_one({
+        "id": group_id,
+        "owner_id": user_id,
+        "invite_code": invite_code,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await db.family_memberships.insert_one({
+        "user_id": user_id,
+        "group_id": group_id,
+        "role": "owner",
+        "joined_at": datetime.now(timezone.utc).isoformat(),
+    })
+    members = await _build_family_snapshot(group_id)
+    return FamilyGroup(id=group_id, invite_code=invite_code, is_owner=True, members=members)
+
+
+@api_router.post("/family/join", response_model=FamilyGroup)
+async def join_family(req: JoinFamilyRequest, user=Depends(get_current_user)):
+    user_id = user["user_id"]
+    existing = await db.family_memberships.find_one({"user_id": user_id})
+    if existing:
+        raise HTTPException(400, "Leave your current family plan before joining another")
+
+    code = (req.invite_code or "").strip().upper()
+    group = await db.family_groups.find_one({"invite_code": code})
+    if not group:
+        raise HTTPException(404, "Invite code not found")
+
+    count = await db.family_memberships.count_documents({"group_id": group["id"]})
+    if count >= FAMILY_MAX_MEMBERS:
+        raise HTTPException(400, f"Family plan supports up to {FAMILY_MAX_MEMBERS} members")
+
+    await db.family_memberships.insert_one({
+        "user_id": user_id,
+        "group_id": group["id"],
+        "role": "member",
+        "joined_at": datetime.now(timezone.utc).isoformat(),
+    })
     try:
+        first_name = (user.get("name") or "Someone").split(" ")[0]
         await send_push(
-            recipients=[device_id],
-            data={"title": "Family plan updated", "message": f"{name} was added to your family plan.", "action_url": "/family"},
-            idempotency_key=f"family-{member['id']}",
+            recipients=[group["owner_id"]],
+            data={"title": "Family plan updated", "message": f"{first_name} joined your family plan.", "action_url": "/family"},
+            idempotency_key=f"family-join-{group['id']}-{user_id}",
         )
     except Exception as e:
-        logging.warning(f"Family push failed (non-blocking): {e}")
-    return FamilyMember(id=member["id"], name=member["name"], device_type=member["device_type"], added_at=member["added_at"])
+        logging.warning(f"Family join push failed (non-blocking): {e}")
 
-@api_router.delete("/family/member/{member_id}")
-async def remove_family_member(member_id: str, user=Depends(get_current_user)):
-    device_id = user["user_id"]
-    await db.family.delete_one({"owner_id": device_id, "id": member_id})
-    return {"removed": member_id}
+    members = await _build_family_snapshot(group["id"])
+    return FamilyGroup(id=group["id"], invite_code=group["invite_code"], is_owner=False, members=members)
+
+
+@api_router.post("/family/leave")
+async def leave_family(user=Depends(get_current_user)):
+    left = await _leave_family_group(user["user_id"])
+    if not left:
+        raise HTTPException(400, "You're not in a family plan")
+    return {"left": True}
+
+
+@api_router.post("/family/remote-clean/{member_user_id}")
+async def family_remote_clean(member_user_id: str, user=Depends(get_current_user)):
+    """The "remote management" action: the family plan owner runs an
+    immediate simulated cleanup on a member's actual account (same
+    reclaimable estimate Smart Nudges/Predictive Storage use), and the
+    member gets a push notification about it."""
+    user_id = user["user_id"]
+    membership = await db.family_memberships.find_one({"user_id": user_id})
+    if not membership or membership["role"] != "owner":
+        raise HTTPException(403, "Only the family plan owner can trigger a remote cleanup")
+    if member_user_id == user_id:
+        raise HTTPException(400, "Use Smart Scan on your own device instead")
+    target = await db.family_memberships.find_one({"user_id": member_user_id, "group_id": membership["group_id"]})
+    if not target:
+        raise HTTPException(404, "That member isn't part of your family plan")
+
+    cleanups = await db.cleanups.find({"device_id": member_user_id}).to_list(1000)
+    reclaimed_mb = _estimate_reclaimable_mb(cleanups)
+    await db.cleanups.insert_one({
+        "id": str(uuid.uuid4()),
+        "device_id": member_user_id,
+        "categories": ["Remote family cleanup"],
+        "reclaimed_mb": reclaimed_mb,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    })
+    try:
+        await send_push(
+            recipients=[member_user_id],
+            data={
+                "title": "Your family admin helped out",
+                "message": f"Freed {round(reclaimed_mb / 1024, 1)} GB on your device remotely.",
+                "action_url": "/(tabs)",
+            },
+            idempotency_key=f"family-remote-clean-{member_user_id}-{uuid.uuid4().hex[:8]}",
+        )
+    except Exception as e:
+        logging.warning(f"Family remote-clean push failed (non-blocking): {e}")
+
+    members = await _build_family_snapshot(membership["group_id"])
+    updated = next((m for m in members if m.user_id == member_user_id), None)
+    return {"reclaimed_mb": reclaimed_mb, "member": updated}
 
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest, request: Request):
