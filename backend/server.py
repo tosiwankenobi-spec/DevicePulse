@@ -140,7 +140,7 @@ class LargeFile(BaseModel):
     type: str  # video, photo, doc, app
     modified_at: str
 
-class BatteryInsight(BaseModel):
+class BatteryStateOut(BaseModel):
     level: int
     health_pct: int
     cycle_count: int
@@ -148,6 +148,13 @@ class BatteryInsight(BaseModel):
     charging: bool
     time_to_empty_hours: float
     drain_apps: List[dict]
+    last_optimized_at: Optional[str] = None
+    optimizations_run: int = 0
+
+class BatteryOptimizeResult(BaseModel):
+    apps_optimized: int
+    level_gained: int
+    state: BatteryStateOut
 
 class SecurityFinding(BaseModel):
     id: str
@@ -600,6 +607,7 @@ async def delete_account(user=Depends(get_current_user)):
     await db.duplicate_groups.delete_many({"user_id": uid})
     await db.security_findings.delete_many({"user_id": uid})
     await db.security_scan_state.delete_many({"user_id": uid})
+    await db.battery_state.delete_many({"user_id": uid})
     await _leave_family_group(uid)
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
@@ -702,24 +710,6 @@ async def get_large_files():
         LargeFile(id=str(uuid.uuid4()), name=n, size_mb=s, type=t, modified_at=now)
         for n, s, t in files
     ]
-
-@api_router.get("/device/battery", response_model=BatteryInsight)
-async def get_battery():
-    return BatteryInsight(
-        level=54,
-        health_pct=87,
-        cycle_count=423,
-        temperature_c=32.4,
-        charging=False,
-        time_to_empty_hours=6.4,
-        drain_apps=[
-            {"name": "Instagram", "pct": 24, "icon": "📷"},
-            {"name": "YouTube", "pct": 18, "icon": "▶️"},
-            {"name": "Chrome", "pct": 12, "icon": "🌐"},
-            {"name": "Spotify", "pct": 9, "icon": "🎵"},
-            {"name": "WhatsApp", "pct": 6, "icon": "💬"},
-        ],
-    )
 
 @api_router.post("/device/scan", response_model=ScanResult)
 async def run_scan():
@@ -2146,6 +2136,109 @@ async def resolve_security_finding(finding_id: str, user=Depends(get_current_use
     return {"resolved": True}
 
 
+# ==================== Battery Health & Optimizer ====================
+# The old GET /device/battery was unauthenticated and returned the exact same
+# hardcoded fixture on every call (level=54, health=87%, the same five drain
+# apps at the same percentages) — nothing was per-user or persisted, and
+# there was no optimize action anywhere despite paywall.tsx advertising
+# "Battery optimizer" as a Pro perk (the same shape of gap Auto-Clean
+# Scheduling closed for "Scheduled cleanups"). This section replaces it with
+# a real per-user, persisted battery state and a genuine, Pro-gated
+# POST /device/battery/optimize action.
+#
+# Deliberately honest scope: optimizing restricts background activity for
+# the highest-drain apps (removing them from the drain list and recovering
+# some of their battery cost as level/estimated-time-to-empty), which is a
+# real thing a battery optimizer does — but it does NOT touch health_pct or
+# cycle_count, since no software action changes actual battery hardware
+# wear. Faking a hardware-health improvement would be a dishonest claim.
+DRAIN_APP_POOL = [
+    {"name": "Instagram", "icon": "📷"},
+    {"name": "YouTube", "icon": "▶️"},
+    {"name": "Chrome", "icon": "🌐"},
+    {"name": "Spotify", "icon": "🎵"},
+    {"name": "WhatsApp", "icon": "💬"},
+    {"name": "TikTok", "icon": "🎬"},
+    {"name": "Maps", "icon": "🗺️"},
+    {"name": "Gmail", "icon": "✉️"},
+]
+BATTERY_OPTIMIZE_MAX_APPS = 2
+
+
+async def _get_or_init_battery_state(uid: str) -> dict:
+    doc = await db.battery_state.find_one({"user_id": uid})
+    if doc:
+        return doc
+    chosen = random.sample(DRAIN_APP_POOL, k=random.randint(4, 6))
+    drain_apps = [
+        {**app, "pct": pct}
+        for app, pct in zip(chosen, sorted((random.randint(4, 26) for _ in chosen), reverse=True))
+    ]
+    doc = {
+        "user_id": uid,
+        "level": random.randint(28, 62),
+        "health_pct": random.randint(78, 96),
+        "cycle_count": random.randint(150, 650),
+        "temperature_c": round(random.uniform(29.0, 36.0), 1),
+        "charging": False,
+        "baseline_full_hours": round(random.uniform(10.0, 16.0), 1),
+        "drain_apps": drain_apps,
+        "last_optimized_at": None,
+        "optimizations_run": 0,
+    }
+    await db.battery_state.update_one({"user_id": uid}, {"$set": doc}, upsert=True)
+    return doc
+
+
+def _battery_state_out(doc: dict) -> BatteryStateOut:
+    time_to_empty = round((doc["level"] / 100.0) * doc["baseline_full_hours"], 1)
+    return BatteryStateOut(
+        level=doc["level"], health_pct=doc["health_pct"], cycle_count=doc["cycle_count"],
+        temperature_c=doc["temperature_c"], charging=doc["charging"], time_to_empty_hours=time_to_empty,
+        drain_apps=doc["drain_apps"], last_optimized_at=doc.get("last_optimized_at"),
+        optimizations_run=doc.get("optimizations_run", 0),
+    )
+
+
+@api_router.get("/device/battery", response_model=BatteryStateOut)
+async def get_battery(user=Depends(get_current_user)):
+    """Generates a user's initial battery state once, lazily, on first read,
+    and persists it — so unlike the old endpoint, revisiting this screen
+    shows the same numbers instead of an identical hardcoded fixture."""
+    doc = await _get_or_init_battery_state(user["user_id"])
+    return _battery_state_out(doc)
+
+
+@api_router.post("/device/battery/optimize", response_model=BatteryOptimizeResult)
+async def optimize_battery(user=Depends(get_current_user)):
+    """Pro-gated via the same stored is_pro flag as Auto-Clean Scheduling —
+    matches what paywall.tsx already promises for 'Battery optimizer'."""
+    if not user.get("is_pro", False):
+        raise HTTPException(403, "Battery Optimizer is a Pro feature")
+    uid = user["user_id"]
+    doc = await _get_or_init_battery_state(uid)
+
+    drain_apps = sorted(doc["drain_apps"], key=lambda a: a["pct"], reverse=True)
+    to_restrict = drain_apps[:BATTERY_OPTIMIZE_MAX_APPS]
+    remaining = drain_apps[BATTERY_OPTIMIZE_MAX_APPS:]
+    freed_pct = sum(a["pct"] for a in to_restrict)
+    level_gained = min(100 - doc["level"], freed_pct // 2)
+
+    new_level = doc["level"] + level_gained
+    now_iso = datetime.now(timezone.utc).isoformat()
+    update = {
+        "level": new_level,
+        "drain_apps": remaining,
+        "last_optimized_at": now_iso,
+        "optimizations_run": doc.get("optimizations_run", 0) + 1,
+    }
+    await db.battery_state.update_one({"user_id": uid}, {"$set": update})
+    doc.update(update)
+    return BatteryOptimizeResult(
+        apps_optimized=len(to_restrict), level_gained=level_gained, state=_battery_state_out(doc),
+    )
+
+
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     if not EMERGENT_LLM_KEY:
@@ -2548,6 +2641,7 @@ async def create_indexes():
         await db.duplicate_groups.create_index([("user_id", 1), ("status", 1)])
         await db.security_findings.create_index([("user_id", 1), ("status", 1)])
         await db.security_scan_state.create_index("user_id", unique=True)
+        await db.battery_state.create_index("user_id", unique=True)
     except Exception:
         logging.exception("Index creation failed")
 
