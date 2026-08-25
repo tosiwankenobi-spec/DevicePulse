@@ -67,11 +67,13 @@ export const api = {
   widgetSummary: () => req<any>('/widget/summary'),
   activeNudge: () => req<any>('/nudges/active'),
   dismissNudge: (type: string) => req<any>(`/nudges/${type}/dismiss`, { method: 'POST' }),
-  family: () => req<any[]>('/family'),
-  addMember: (body: { name: string; device_type: string }) =>
-    req<any>('/family/member', { method: 'POST', body: JSON.stringify(body) }),
-  removeMember: (memberId: string) =>
-    req<any>(`/family/member/${memberId}`, { method: 'DELETE' }),
+  familyGroup: () => req<any>('/family/group'),
+  createFamily: () => req<any>('/family/create', { method: 'POST' }),
+  joinFamily: (inviteCode: string) =>
+    req<any>('/family/join', { method: 'POST', body: JSON.stringify({ invite_code: inviteCode }) }),
+  leaveFamily: () => req<any>('/family/leave', { method: 'POST' }),
+  familyRemoteClean: (memberUserId: string) =>
+    req<any>(`/family/remote-clean/${memberUserId}`, { method: 'POST' }),
 
   // AI Health Coach
   coachDaily: () => req<any>('/coach/daily'),
