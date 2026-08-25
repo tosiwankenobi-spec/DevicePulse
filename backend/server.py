@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Header, Depends
+from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,6 +7,7 @@ import os
 import logging
 import random
 import uuid
+import html
 import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field
@@ -215,6 +217,19 @@ class FamilyGroup(BaseModel):
 
 class JoinFamilyRequest(BaseModel):
     invite_code: str
+
+class CleanupReport(BaseModel):
+    share_code: str
+    generated_at: str
+    display_name: str
+    health_score: int
+    status: str  # Excellent | Good | Needs Attention | Poor
+    total_cleanups: int
+    total_reclaimed_mb: float
+    total_reclaimed_gb: float
+    current_streak_weeks: int
+    top_category: Optional[str] = None
+    days_until_full: int
 
 class CoachChatRequest(BaseModel):
     message: str
@@ -543,6 +558,7 @@ async def delete_account(user=Depends(get_current_user)):
     await db.referrals.delete_many({"device_id": uid})
     await db.reminders.delete_many({"device_id": uid})
     await db.freezes.delete_many({"device_id": uid})
+    await db.cleanup_reports.delete_many({"user_id": uid})
     await _leave_family_group(uid)
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
@@ -1426,6 +1442,227 @@ async def family_remote_clean(member_user_id: str, user=Depends(get_current_user
     updated = next((m for m in members if m.user_id == member_user_id), None)
     return {"reclaimed_mb": reclaimed_mb, "member": updated}
 
+
+# ==================== Shareable Cleanup Report ====================
+# A point-in-time recap of real account history that the user can share
+# publicly. Unlike everything else in this file, GET /reports/{share_code}
+# is intentionally NOT behind auth — the whole point of "shareable" is that
+# someone without the app, and without an account, can open the link and see
+# it. Each POST /reports/generate call snapshots real data (same helpers the
+# rest of the app uses: streaks, forecast, top category, pulse score) and
+# freezes it under a fresh share code; regenerating never mutates a report
+# already shared under an older code, so a link someone was sent keeps
+# showing what was true when it was shared, not a live-updating view.
+#
+# Mirrors the Family Dashboard's nullable-GET / explicit-POST-create design
+# for the same reason: auto-creating a report on first read would be a
+# surprising side effect of just opening the screen.
+
+async def _generate_unique_report_code() -> str:
+    for _ in range(5):
+        code = f"CR-{uuid.uuid4().hex[:6].upper()}"
+        if not await db.cleanup_reports.find_one({"share_code": code}):
+            return code
+    return f"CR-{uuid.uuid4().hex[:8].upper()}"
+
+
+async def _build_cleanup_report(user: dict) -> dict:
+    user_id = user["user_id"]
+    cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
+    total_reclaimed_mb = sum(d.get("reclaimed_mb", 0.0) for d in cleanups)
+    score, _cleaned_last_24h = _compute_daily_pulse_score(cleanups)
+    streak_data = await _compute_streak_data(user_id)
+    forecast = await _compute_forecast(user_id)
+    first_name = (user.get("name") or "A DevicePulse user").strip().split(" ")[0] or "A DevicePulse user"
+    return {
+        "id": str(uuid.uuid4()),
+        "share_code": await _generate_unique_report_code(),
+        "user_id": user_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "display_name": first_name,
+        "health_score": score,
+        "status": _pulse_status_band(score),
+        "total_cleanups": len(cleanups),
+        "total_reclaimed_mb": round(total_reclaimed_mb, 1),
+        "total_reclaimed_gb": round(total_reclaimed_mb / 1024, 2),
+        "current_streak_weeks": streak_data["current_streak_weeks"],
+        "top_category": _detect_top_category(cleanups),
+        "days_until_full": forecast["days_until_full"],
+    }
+
+
+def _report_public_view(doc: dict) -> CleanupReport:
+    """Only ever returns the frozen, non-identifying snapshot fields — never
+    user_id or email, since this same shape is served on the public route."""
+    return CleanupReport(
+        share_code=doc["share_code"],
+        generated_at=doc["generated_at"],
+        display_name=doc["display_name"],
+        health_score=doc["health_score"],
+        status=doc["status"],
+        total_cleanups=doc["total_cleanups"],
+        total_reclaimed_mb=doc["total_reclaimed_mb"],
+        total_reclaimed_gb=doc["total_reclaimed_gb"],
+        current_streak_weeks=doc["current_streak_weeks"],
+        top_category=doc.get("top_category"),
+        days_until_full=doc["days_until_full"],
+    )
+
+
+@api_router.get("/reports/mine", response_model=Optional[CleanupReport])
+async def get_my_latest_report(user=Depends(get_current_user)):
+    docs = await db.cleanup_reports.find(
+        {"user_id": user["user_id"]}, {"_id": 0}
+    ).sort("generated_at", -1).to_list(1)
+    if not docs:
+        return None
+    return _report_public_view(docs[0])
+
+
+@api_router.post("/reports/generate", response_model=CleanupReport)
+async def generate_cleanup_report(user=Depends(get_current_user)):
+    doc = await _build_cleanup_report(user)
+    await db.cleanup_reports.insert_one(doc.copy())
+    return _report_public_view(doc)
+
+
+@api_router.get("/reports/{share_code}", response_model=CleanupReport)
+async def get_public_report(share_code: str):
+    """Public, unauthenticated by design — see module note above. Returns the
+    JSON snapshot; the app uses this. A human opening the shared link in a
+    plain browser instead lands on GET /r/{share_code} (below), which renders
+    the same data as an actual page instead of raw JSON."""
+    doc = await db.cleanup_reports.find_one(
+        {"share_code": share_code.strip().upper()}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(404, "Report not found")
+    return _report_public_view(doc)
+
+
+_REPORT_STAT = """
+  <div class="stat">
+    <div class="stat-value">{value}</div>
+    <div class="stat-label">{label}</div>
+  </div>
+"""
+
+_REPORT_PAGE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<meta property="og:type" content="website">
+<meta property="og:title" content="{title}">
+<meta property="og:description" content="{description}">
+<meta name="description" content="{description}">
+<style>
+  :root {{ color-scheme: dark; }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 32px 16px; background: linear-gradient(160deg, #050F14, #0B1B24);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }}
+  .card {{
+    width: 100%; max-width: 420px; border-radius: 24px; padding: 36px 28px;
+    background: linear-gradient(135deg, #064E3B, #059669, #10B981);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.45); text-align: center;
+  }}
+  .badge {{
+    width: 64px; height: 64px; border-radius: 32px; margin: 0 auto 18px;
+    background: rgba(2,44,34,0.25); display: flex; align-items: center; justify-content: center;
+    font-size: 30px;
+  }}
+  h1 {{ color: #022C22; font-size: 24px; font-weight: 800; margin: 0 0 4px; }}
+  .sub {{ color: rgba(2,44,34,0.85); font-size: 14px; margin: 0 0 20px; }}
+  .headline {{ color: #022C22; font-size: 42px; font-weight: 800; letter-spacing: -1px; margin: 0; }}
+  .headline-label {{ color: rgba(2,44,34,0.75); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }}
+  .stats {{
+    margin-top: 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    background: rgba(2,44,34,0.14); border-radius: 16px; padding: 18px;
+  }}
+  .stat-value {{ color: #022C22; font-size: 20px; font-weight: 800; }}
+  .stat-label {{ color: rgba(2,44,34,0.7); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; margin-top: 2px; }}
+  .stamp {{ margin-top: 26px; color: rgba(2,44,34,0.8); font-size: 13px; font-weight: 700; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">✅</div>
+    <h1>{display_name}'s Cleanup Report</h1>
+    <p class="sub">Generated with DevicePulse</p>
+    <div class="headline-label">Total storage freed</div>
+    <p class="headline">{total_gb} GB</p>
+    <div class="stats">
+      {stats}
+    </div>
+    <p class="stamp">⚡ DevicePulse</p>
+  </div>
+</body>
+</html>
+"""
+
+_REPORT_NOT_FOUND_PAGE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Report not found</title>
+<style>
+  body {{
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #050F14; color: #F0FDFA; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    text-align: center; padding: 32px;
+  }}
+</style>
+</head>
+<body>
+  <div>
+    <h1>Report not found</h1>
+    <p>This DevicePulse cleanup report link is invalid or no longer available.</p>
+  </div>
+</body>
+</html>
+"""
+
+
+@app.get("/r/{share_code}", response_class=HTMLResponse)
+async def view_public_report_page(share_code: str):
+    """The human-facing counterpart to GET /api/reports/{share_code}: opening
+    a shared link in a plain browser renders an actual page instead of raw
+    JSON. Lives outside the /api prefix since it's a page, not an API call."""
+    doc = await db.cleanup_reports.find_one(
+        {"share_code": share_code.strip().upper()}, {"_id": 0}
+    )
+    if not doc:
+        return HTMLResponse(content=_REPORT_NOT_FOUND_PAGE, status_code=404)
+
+    name = html.escape(doc["display_name"])
+    stats = []
+    stats.append(_REPORT_STAT.format(value=doc["total_cleanups"], label="Cleanups"))
+    stats.append(_REPORT_STAT.format(value=f'{doc["current_streak_weeks"]}wk', label="Streak"))
+    stats.append(_REPORT_STAT.format(value=f'{doc["health_score"]}/100', label=html.escape(doc["status"])))
+    if doc.get("top_category"):
+        stats.append(_REPORT_STAT.format(value=html.escape(doc["top_category"]), label="Top category"))
+    else:
+        stats.append(_REPORT_STAT.format(value=f'{doc["days_until_full"]}d', label="Until storage full"))
+
+    description = (
+        f"{name} freed {doc['total_reclaimed_gb']} GB across {doc['total_cleanups']} cleanups "
+        f"with DevicePulse."
+    )
+    page = _REPORT_PAGE.format(
+        title=f"{name}'s DevicePulse Cleanup Report",
+        description=html.escape(description),
+        display_name=name,
+        total_gb=doc["total_reclaimed_gb"],
+        stats="".join(stats),
+    )
+    return HTMLResponse(content=page)
+
+
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     if not EMERGENT_LLM_KEY:
@@ -1821,6 +2058,8 @@ async def create_indexes():
         await db.user_sessions.create_index("session_token", unique=True)
         await db.user_sessions.create_index("user_id")
         await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
+        await db.cleanup_reports.create_index("share_code", unique=True)
+        await db.cleanup_reports.create_index("user_id")
     except Exception:
         logging.exception("Index creation failed")
 
