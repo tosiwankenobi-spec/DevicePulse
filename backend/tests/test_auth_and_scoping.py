@@ -65,6 +65,7 @@ def _cleanup_user(user_id, token):
     _db.family_groups.delete_many({"owner_id": user_id})
     _db.cleanup_reports.delete_many({"user_id": user_id})
     _db.autoclean_schedules.delete_many({"user_id": user_id})
+    _db.duplicate_groups.delete_many({"user_id": user_id})
 
 
 @pytest.fixture(scope="module")
@@ -132,12 +133,15 @@ PROTECTED = [
     ("PUT", "/autoclean/schedule", {"enabled": True, "frequency": "daily", "categories": ["Junk files"]}),
     ("DELETE", "/autoclean/schedule", None),
     ("POST", "/autoclean/run-if-due", None),
+    # Duplicate Photo AI:
+    ("GET", "/device/duplicates", None),
+    ("POST", "/device/duplicates/scan", None),
+    ("POST", "/device/duplicates/remove", {"group_ids": ["does-not-exist"]}),
 ]
 
 PUBLIC = [
     ("GET", "/device/health"),
     ("GET", "/device/storage"),
-    ("GET", "/device/duplicates"),
     ("GET", "/device/large-files"),
     ("GET", "/device/battery"),
     ("GET", "/device/security"),
