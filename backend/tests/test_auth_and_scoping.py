@@ -66,6 +66,8 @@ def _cleanup_user(user_id, token):
     _db.cleanup_reports.delete_many({"user_id": user_id})
     _db.autoclean_schedules.delete_many({"user_id": user_id})
     _db.duplicate_groups.delete_many({"user_id": user_id})
+    _db.security_findings.delete_many({"user_id": user_id})
+    _db.security_scan_state.delete_many({"user_id": user_id})
 
 
 @pytest.fixture(scope="module")
@@ -137,6 +139,10 @@ PROTECTED = [
     ("GET", "/device/duplicates", None),
     ("POST", "/device/duplicates/scan", None),
     ("POST", "/device/duplicates/remove", {"group_ids": ["does-not-exist"]}),
+    # Security (real account signals):
+    ("GET", "/device/security", None),
+    ("POST", "/device/security/scan", None),
+    ("POST", "/device/security/findings/does-not-exist/resolve", None),
 ]
 
 PUBLIC = [
@@ -144,7 +150,6 @@ PUBLIC = [
     ("GET", "/device/storage"),
     ("GET", "/device/large-files"),
     ("GET", "/device/battery"),
-    ("GET", "/device/security"),
     ("POST", "/device/scan"),
 ]
 
