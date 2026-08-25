@@ -53,6 +53,8 @@ export const api = {
     req<any>('/device/large-files/delete', { method: 'POST', body: JSON.stringify({ file_ids: fileIds }) }),
   battery: () => req<any>('/device/battery'),
   optimizeBattery: () => req<any>('/device/battery/optimize', { method: 'POST' }),
+  memory: () => req<any>('/device/memory'),
+  boostMemory: () => req<any>('/device/memory/boost', { method: 'POST' }),
   security: () => req<any>('/device/security'),
   scanSecurity: () => req<any>('/device/security/scan', { method: 'POST' }),
   resolveSecurityFinding: (id: string) => req<any>(`/device/security/findings/${id}/resolve`, { method: 'POST' }),
