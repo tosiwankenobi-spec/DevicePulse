@@ -63,6 +63,7 @@ def _cleanup_user(user_id, token):
     _db.freezes.delete_many({"device_id": user_id})
     _db.family_memberships.delete_many({"user_id": user_id})
     _db.family_groups.delete_many({"owner_id": user_id})
+    _db.cleanup_reports.delete_many({"user_id": user_id})
 
 
 @pytest.fixture(scope="module")
@@ -119,6 +120,10 @@ PROTECTED = [
     # AI Health Coach upgrade (learned patterns + win celebrations):
     ("GET", "/coach/insights", None),
     ("POST", "/coach/insights/win_first_clean/ack", None),
+    # Shareable Cleanup Report (GET /reports/{share_code} is intentionally
+    # public — see test_cleanup_report.py — so it's not listed here):
+    ("GET", "/reports/mine", None),
+    ("POST", "/reports/generate", None),
 ]
 
 PUBLIC = [
