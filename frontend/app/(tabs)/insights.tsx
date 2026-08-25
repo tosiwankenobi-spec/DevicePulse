@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 
@@ -14,12 +15,56 @@ export default function Insights() {
   const [storage, setStorage] = useState<any>(null);
   const [battery, setBattery] = useState<any>(null);
   const [security, setSecurity] = useState<any>(null);
+  const [securityBusy, setSecurityBusy] = useState<string | null>(null); // finding id (or 'scan') in flight
+
+  const loadSecurity = useCallback(() => {
+    api.security().then(setSecurity).catch(() => {});
+  }, []);
 
   useEffect(() => {
     api.storage().then(setStorage).catch(() => {});
     api.battery().then(setBattery).catch(() => {});
-    api.security().then(setSecurity).catch(() => {});
-  }, []);
+    loadSecurity();
+  }, [loadSecurity]);
+
+  const onSecurityScan = async () => {
+    setSecurityBusy('scan');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    try {
+      const res = await api.scanSecurity();
+      setSecurity(res.scan);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setSecurityBusy(null);
+    }
+  };
+
+  const onRevokeSession = async (sid: string) => {
+    setSecurityBusy(sid);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    try {
+      await api.revokeSession(sid);
+      loadSecurity();
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setSecurityBusy(null);
+    }
+  };
+
+  const onResolveFinding = async (id: string) => {
+    setSecurityBusy(id);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    try {
+      await api.resolveSecurityFinding(id);
+      loadSecurity();
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setSecurityBusy(null);
+    }
+  };
 
   return (
     <View style={styles.container} testID="insights-screen">
@@ -58,7 +103,15 @@ export default function Insights() {
             battery ? <BatteryView data={battery} /> : <Loader />
           )}
           {tab === 'security' && (
-            security ? <SecurityView data={security} /> : <Loader />
+            security ? (
+              <SecurityView
+                data={security}
+                busy={securityBusy}
+                onScan={onSecurityScan}
+                onRevokeSession={onRevokeSession}
+                onResolveFinding={onResolveFinding}
+              />
+            ) : <Loader />
           )}
         </ScrollView>
       </SafeAreaView>
@@ -152,7 +205,15 @@ const BatteryView = ({ data }: { data: any }) => (
   </View>
 );
 
-const SecurityView = ({ data }: { data: any }) => (
+type SecurityViewProps = {
+  data: any;
+  busy: string | null;
+  onScan: () => void;
+  onRevokeSession: (sid: string) => void;
+  onResolveFinding: (id: string) => void;
+};
+
+const SecurityView = ({ data, busy, onScan, onRevokeSession, onResolveFinding }: SecurityViewProps) => (
   <View>
     <LinearGradient
       colors={data.status === 'safe' ? theme.gradients.brand : theme.gradients.danger}
@@ -160,25 +221,52 @@ const SecurityView = ({ data }: { data: any }) => (
       start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
     >
       <Ionicons name={data.status === 'safe' ? 'shield-checkmark' : 'alert-circle'} size={44} color={theme.color.onBrand} />
-      <Text style={styles.securityHeroTitle}>{data.status === 'safe' ? 'Your device is safe' : 'Threats detected'}</Text>
+      <Text style={styles.securityHeroTitle}>{data.status === 'safe' ? 'Your device is safe' : 'Items need attention'}</Text>
       <Text style={styles.securityHeroSub}>Scanned {data.apps_scanned} apps · {data.permissions_reviewed} permissions reviewed</Text>
+      <Pressable style={styles.scanAgainPill} onPress={onScan} disabled={busy === 'scan'} testID="security-scan-again">
+        {busy === 'scan' ? <ActivityIndicator size="small" color={theme.color.onBrand} /> : <Text style={styles.scanAgainPillText}>Scan again</Text>}
+      </Pressable>
     </LinearGradient>
 
-    <Text style={styles.sectionTitle}>{data.threats.length > 0 ? 'Items to review' : 'No threats found'}</Text>
-    {data.threats.map((t: any) => (
-      <View key={t.id} style={styles.card}>
+    <Text style={styles.sectionTitle}>{data.findings.length > 0 ? 'Items to review' : 'No issues found'}</Text>
+    {data.findings.map((f: any) => (
+      <View key={f.id} style={styles.card} testID={`security-finding-${f.id}`}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
           <View style={[styles.severityBadge, {
-            backgroundColor: t.severity === 'high' ? theme.color.error + '33' : t.severity === 'medium' ? theme.color.warning + '33' : theme.color.info + '33'
+            backgroundColor: f.severity === 'high' ? theme.color.error + '33' : f.severity === 'medium' ? theme.color.warning + '33' : theme.color.info + '33'
           }]}>
             <Text style={[styles.severityText, {
-              color: t.severity === 'high' ? theme.color.error : t.severity === 'medium' ? theme.color.warning : theme.color.info
-            }]}>{t.severity.toUpperCase()}</Text>
+              color: f.severity === 'high' ? theme.color.error : f.severity === 'medium' ? theme.color.warning : theme.color.info
+            }]}>{f.severity.toUpperCase()}</Text>
           </View>
-          <Text style={styles.threatCategory}>{t.category}</Text>
+          <Text style={styles.threatCategory}>{f.category}</Text>
         </View>
-        <Text style={styles.threatTitle}>{t.title}</Text>
-        <Text style={styles.threatBody}>{t.description}</Text>
+        <Text style={styles.threatTitle}>{f.title}</Text>
+        <Text style={styles.threatBody}>{f.description}</Text>
+        {f.action === 'revoke_session' && (
+          <Pressable
+            style={styles.findingActionBtn}
+            onPress={() => onRevokeSession(f.session_sid)}
+            disabled={busy === f.session_sid}
+            testID={`security-revoke-${f.session_sid}`}
+          >
+            {busy === f.session_sid
+              ? <ActivityIndicator size="small" color={theme.color.error} />
+              : <Text style={styles.findingActionText}>Revoke this session</Text>}
+          </Pressable>
+        )}
+        {f.action === 'resolve' && (
+          <Pressable
+            style={styles.findingActionBtn}
+            onPress={() => onResolveFinding(f.id)}
+            disabled={busy === f.id}
+            testID={`security-resolve-${f.id}`}
+          >
+            {busy === f.id
+              ? <ActivityIndicator size="small" color={theme.color.brand} />
+              : <Text style={[styles.findingActionText, { color: theme.color.brand }]}>Mark as resolved</Text>}
+          </Pressable>
+        )}
       </View>
     ))}
   </View>
@@ -221,6 +309,10 @@ const styles = StyleSheet.create({
   securityHero: { borderRadius: theme.radius.lg, padding: theme.space.xl, alignItems: 'center', marginBottom: theme.space.md },
   securityHeroTitle: { color: theme.color.onBrand, fontSize: 20, fontWeight: '800', marginTop: 10 },
   securityHeroSub: { color: 'rgba(2,44,34,0.8)', fontSize: 12, marginTop: 4, textAlign: 'center' },
+  scanAgainPill: { marginTop: 14, height: 34, paddingHorizontal: 16, borderRadius: theme.radius.pill, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(2,44,34,0.18)', borderWidth: 1, borderColor: 'rgba(2,44,34,0.35)' },
+  scanAgainPillText: { color: theme.color.onBrand, fontSize: 12, fontWeight: '700' },
+  findingActionBtn: { marginTop: 10, alignSelf: 'flex-start', paddingVertical: 6, paddingHorizontal: 2 },
+  findingActionText: { color: theme.color.error, fontSize: 12, fontWeight: '700' },
   severityBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill },
   severityText: { fontSize: 10, fontWeight: '800' },
   threatCategory: { color: theme.color.onSurface3, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.8, fontWeight: '600' },
