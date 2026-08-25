@@ -30,6 +30,15 @@ type Daily = {
   action_label: string;
   action_route: string;
 };
+type Insight = {
+  key: string;
+  kind: 'win' | 'pattern';
+  title: string;
+  body: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  action_label?: string;
+  action_route?: string;
+};
 
 const focusIcon: Record<string, keyof typeof Ionicons.glyphMap> = {
   storage: 'server-outline',
@@ -50,6 +59,8 @@ export default function Coach() {
   const chatUnlocked = isSubscribed || (__DEV__ && Platform.OS === 'web');
 
   const [daily, setDaily] = useState<Daily | null>(null);
+  const [insights, setInsights] = useState<Insight[]>([]);
+  const [ackingKey, setAckingKey] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -59,20 +70,36 @@ export default function Coach() {
 
   const load = useCallback(async () => {
     try {
-      const [d, h, hist] = await Promise.all([
+      const [d, h, hist, ins] = await Promise.all([
         api.coachDaily().catch(() => null),
         api.health().catch(() => null),
         api.coachHistory().catch(() => []),
+        api.coachInsights().catch(() => []),
       ]);
       if (d) setDaily(d);
       if (h) setHealth(h);
       setMessages(hist || []);
+      setInsights(ins || []);
     } catch (e) {
       console.log(e);
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const onAckInsight = async (key: string) => {
+    if (ackingKey) return;
+    setAckingKey(key);
+    setInsights((cur) => cur.filter((i) => i.key !== key)); // optimistic
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    try {
+      await api.ackCoachInsight(key);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setAckingKey(null);
+    }
+  };
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -125,7 +152,7 @@ export default function Coach() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.headerTitle}>AI Health Coach</Text>
-            <Text style={styles.headerSub}>Your personal device assistant</Text>
+            <Text style={styles.headerSub}>Learns your habits, celebrates your wins</Text>
           </View>
           {messages.length > 0 && (
             <Pressable
@@ -154,6 +181,54 @@ export default function Coach() {
               <ActivityIndicator color={theme.color.brand} style={{ marginTop: 40 }} />
             ) : (
               <>
+                {insights.filter((i) => i.kind === 'win').map((i) => (
+                  <Animated.View key={i.key} entering={FadeInUp.duration(300)}>
+                    <GlassCard style={styles.winCardOuter} testID={`coach-insight-${i.key}`}>
+                      <View style={styles.winCard}>
+                        <View style={styles.winIcon}>
+                          <Ionicons name={i.icon} size={18} color={theme.color.warning} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.winTitle}>{i.title}</Text>
+                          <Text style={styles.winBody}>{i.body}</Text>
+                        </View>
+                        <Pressable
+                          style={styles.winAck}
+                          testID={`coach-insight-ack-${i.key}`}
+                          onPress={() => onAckInsight(i.key)}
+                        >
+                          <Text style={styles.winAckText}>Nice!</Text>
+                        </Pressable>
+                      </View>
+                    </GlassCard>
+                  </Animated.View>
+                ))}
+
+                {insights.filter((i) => i.kind === 'pattern').map((i) => (
+                  <Animated.View key={i.key} entering={FadeInUp.duration(300)}>
+                    <GlassCard style={styles.patternCard} testID={`coach-insight-${i.key}`}>
+                      <View style={styles.dailyTop}>
+                        <View style={[styles.dailyBadge, { backgroundColor: theme.color.info }]}>
+                          <Ionicons name={i.icon} size={16} color={theme.color.onBrand} />
+                        </View>
+                        <Text style={styles.dailyGreeting}>Learned from your habits</Text>
+                      </View>
+                      <Text style={styles.dailyTitle}>{i.title}</Text>
+                      <Text style={styles.dailyBody}>{i.body}</Text>
+                      {i.action_label && i.action_route && (
+                        <Pressable
+                          style={styles.dailyAction}
+                          testID={`coach-insight-action-${i.key}`}
+                          onPress={() => { Haptics.selectionAsync().catch(() => {}); router.push(i.action_route as any); }}
+                        >
+                          <Text style={styles.dailyActionText}>{i.action_label}</Text>
+                          <Ionicons name="arrow-forward" size={16} color={theme.color.onBrand} />
+                        </Pressable>
+                      )}
+                    </GlassCard>
+                  </Animated.View>
+                ))}
+
                 {daily && (
                   <Animated.View entering={FadeInUp.duration(400)}>
                     <GlassCard style={styles.dailyCard} testID="coach-daily-card">
@@ -281,6 +356,24 @@ const styles = StyleSheet.create({
   headerSub: { color: theme.color.onSurface3, fontSize: 12, marginTop: 1 },
   scroll: { paddingHorizontal: theme.space.lg, paddingBottom: theme.space.xl, gap: theme.space.md },
   dailyCard: { marginBottom: theme.space.sm },
+  patternCard: { marginBottom: theme.space.sm },
+  winCardOuter: { marginBottom: theme.space.sm },
+  winCard: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.space.sm,
+  },
+  winIcon: {
+    width: 34, height: 34, borderRadius: 10,
+    backgroundColor: 'rgba(245,158,11,0.14)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  winTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '800' },
+  winBody: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2, lineHeight: 16 },
+  winAck: {
+    backgroundColor: theme.color.brand,
+    borderRadius: theme.radius.pill,
+    paddingVertical: 8, paddingHorizontal: 14,
+  },
+  winAckText: { color: theme.color.onBrand, fontSize: 12, fontWeight: '800' },
   dailyTop: { flexDirection: 'row', alignItems: 'center', gap: theme.space.sm, marginBottom: theme.space.sm },
   dailyBadge: {
     width: 28, height: 28, borderRadius: 8,
