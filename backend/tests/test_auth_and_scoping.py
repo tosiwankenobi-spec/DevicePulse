@@ -64,6 +64,7 @@ def _cleanup_user(user_id, token):
     _db.family_memberships.delete_many({"user_id": user_id})
     _db.family_groups.delete_many({"owner_id": user_id})
     _db.cleanup_reports.delete_many({"user_id": user_id})
+    _db.autoclean_schedules.delete_many({"user_id": user_id})
 
 
 @pytest.fixture(scope="module")
@@ -124,6 +125,13 @@ PROTECTED = [
     # public — see test_cleanup_report.py — so it's not listed here):
     ("GET", "/reports/mine", None),
     ("POST", "/reports/generate", None),
+    # Auto-Clean Scheduling (Pro-only) + entitlements:
+    ("GET", "/entitlements/me", None),
+    ("POST", "/entitlements/sync", {"is_pro": True}),
+    ("GET", "/autoclean/schedule", None),
+    ("PUT", "/autoclean/schedule", {"enabled": True, "frequency": "daily", "categories": ["Junk files"]}),
+    ("DELETE", "/autoclean/schedule", None),
+    ("POST", "/autoclean/run-if-due", None),
 ]
 
 PUBLIC = [
