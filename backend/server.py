@@ -133,12 +133,24 @@ class DuplicateRemoveResult(BaseModel):
     freed_mb: float
     groups: List[DuplicateGroupOut]
 
-class LargeFile(BaseModel):
+class LargeFileOut(BaseModel):
     id: str
     name: str
     size_mb: float
     type: str  # video, photo, doc, app
     modified_at: str
+
+class LargeFileScanResult(BaseModel):
+    new_files_found: int
+    files: List[LargeFileOut]
+
+class LargeFileDeleteRequest(BaseModel):
+    file_ids: List[str]
+
+class LargeFileDeleteResult(BaseModel):
+    deleted_count: int
+    freed_mb: float
+    files: List[LargeFileOut]
 
 class BatteryStateOut(BaseModel):
     level: int
@@ -608,6 +620,7 @@ async def delete_account(user=Depends(get_current_user)):
     await db.security_findings.delete_many({"user_id": uid})
     await db.security_scan_state.delete_many({"user_id": uid})
     await db.battery_state.delete_many({"user_id": uid})
+    await db.large_files.delete_many({"user_id": uid})
     await _leave_family_group(uid)
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
@@ -693,23 +706,6 @@ async def get_storage_analysis():
         breakdown=breakdown,
     )
 
-@api_router.get("/device/large-files", response_model=List[LargeFile])
-async def get_large_files():
-    files = [
-        ("Vacation_2024_Highlights.mp4", 1240.5, "video"),
-        ("Podcast_Episode_47.mp3", 84.2, "audio"),
-        ("Project_Backup.zip", 512.0, "doc"),
-        ("Screen_Recording_Aug.mov", 342.7, "video"),
-        ("Design_Assets_Master.psd", 218.4, "doc"),
-        ("Old_Games_Archive.zip", 892.1, "doc"),
-        ("Family_Wedding.mp4", 1580.3, "video"),
-        ("Tutorial_Series.mp4", 620.9, "video"),
-    ]
-    now = datetime.now(timezone.utc).isoformat()
-    return [
-        LargeFile(id=str(uuid.uuid4()), name=n, size_mb=s, type=t, modified_at=now)
-        for n, s, t in files
-    ]
 
 @api_router.post("/device/scan", response_model=ScanResult)
 async def run_scan():
@@ -2239,6 +2235,114 @@ async def optimize_battery(user=Depends(get_current_user)):
     )
 
 
+# ==================== Large File Cleanup ====================
+# The old GET /device/large-files was unauthenticated and returned the exact
+# same fixed eight-file hardcoded array on every call — not per-user, not
+# persisted. Worse than the other pre-existing gaps: the "Delete X GB" button
+# on the large-files screen was 100% cosmetic (onPress={() => router.back()})
+# — it never called the backend at all, so nothing was ever actually
+# "deleted." This section replaces both with real per-user, persisted large
+# files and a genuine delete action that records a real cleanup.
+#
+# Unlike Auto-Clean Scheduling — which deliberately excludes "Large files"
+# from its allowed categories, since unattended/automatic deletion of a
+# category likely to contain something the user wants to keep is too
+# aggressive — deletion here is always an explicit, individually-selected
+# user action on this screen, the same trust level as Duplicate Photo AI's
+# manual review-then-remove flow. No Pro gate: unlike duplicate cleanup and
+# the battery optimizer, paywall.tsx has never advertised a "large file"
+# perk, so there's no promise to enforce here — this is free for everyone.
+LARGE_FILE_POOL = [
+    ("Vacation_Highlights.mp4", "video", (400, 2200)),
+    ("Family_Wedding.mp4", "video", (600, 2400)),
+    ("Screen_Recording.mov", "video", (150, 900)),
+    ("Tutorial_Series.mp4", "video", (300, 1400)),
+    ("Podcast_Episode.mp3", "audio", (40, 180)),
+    ("Voice_Memos_Backup.m4a", "audio", (20, 120)),
+    ("Project_Backup.zip", "doc", (200, 1200)),
+    ("Design_Assets_Master.psd", "doc", (100, 600)),
+    ("Old_Games_Archive.zip", "doc", (300, 1400)),
+    ("Camera_Roll_Export.zip", "photo", (200, 1000)),
+    ("Screenshots_2025.zip", "photo", (80, 400)),
+]
+
+
+def _make_large_file() -> dict:
+    name, ftype, (lo, hi) = random.choice(LARGE_FILE_POOL)
+    return {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "size_mb": round(random.uniform(lo, hi), 1),
+        "type": ftype,
+        "modified_at": datetime.now(timezone.utc).isoformat(),
+        "status": "pending",
+        "deleted_at": None,
+    }
+
+
+def _large_file_out(d: dict) -> LargeFileOut:
+    return LargeFileOut(id=d["id"], name=d["name"], size_mb=d["size_mb"], type=d["type"], modified_at=d["modified_at"])
+
+
+@api_router.get("/device/large-files", response_model=List[LargeFileOut])
+async def get_large_files(user=Depends(get_current_user)):
+    """Generates a user's initial large-file list once, lazily, on first
+    read, and persists it to Mongo — so unlike the old endpoint, revisiting
+    this screen shows the same files instead of an identical fixed array."""
+    uid = user["user_id"]
+    existing = await db.large_files.count_documents({"user_id": uid})
+    if existing == 0:
+        initial = [{**_make_large_file(), "user_id": uid} for _ in range(random.randint(5, 8))]
+        await db.large_files.insert_many([f.copy() for f in initial])
+    docs = await db.large_files.find({"user_id": uid, "status": "pending"}).sort("size_mb", -1).to_list(200)
+    return [_large_file_out(d) for d in docs]
+
+
+@api_router.post("/device/large-files/scan", response_model=LargeFileScanResult)
+async def scan_large_files(user=Depends(get_current_user)):
+    """Simulates newly-detected large files since the last scan — appends to
+    (never replaces) the pending list, same pattern as Duplicate Photo AI."""
+    uid = user["user_id"]
+    new_files = [{**_make_large_file(), "user_id": uid} for _ in range(random.randint(1, 2))]
+    await db.large_files.insert_many([f.copy() for f in new_files])
+    docs = await db.large_files.find({"user_id": uid, "status": "pending"}).sort("size_mb", -1).to_list(200)
+    return LargeFileScanResult(new_files_found=len(new_files), files=[_large_file_out(d) for d in docs])
+
+
+@api_router.post("/device/large-files/delete", response_model=LargeFileDeleteResult)
+async def delete_large_files(req: LargeFileDeleteRequest, user=Depends(get_current_user)):
+    uid = user["user_id"]
+    if not req.file_ids:
+        raise HTTPException(400, "file_ids is required")
+
+    docs = await db.large_files.find({
+        "id": {"$in": req.file_ids}, "user_id": uid, "status": "pending",
+    }).to_list(len(req.file_ids))
+    found_ids = {d["id"] for d in docs}
+    missing = [fid for fid in req.file_ids if fid not in found_ids]
+    if missing:
+        raise HTTPException(404, f"Unknown or already-deleted file id(s): {', '.join(missing)}")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    freed_mb = round(sum(d["size_mb"] for d in docs), 1)
+    await db.large_files.update_many(
+        {"id": {"$in": list(found_ids)}, "user_id": uid},
+        {"$set": {"status": "deleted", "deleted_at": now_iso}},
+    )
+    if freed_mb > 0:
+        await db.cleanups.insert_one({
+            "id": str(uuid.uuid4()),
+            "device_id": uid,
+            "categories": ["Large files"],
+            "reclaimed_mb": freed_mb,
+            "completed_at": now_iso,
+        })
+    remaining = await db.large_files.find({"user_id": uid, "status": "pending"}).sort("size_mb", -1).to_list(200)
+    return LargeFileDeleteResult(
+        deleted_count=len(docs), freed_mb=freed_mb, files=[_large_file_out(d) for d in remaining],
+    )
+
+
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     if not EMERGENT_LLM_KEY:
@@ -2642,6 +2746,8 @@ async def create_indexes():
         await db.security_findings.create_index([("user_id", 1), ("status", 1)])
         await db.security_scan_state.create_index("user_id", unique=True)
         await db.battery_state.create_index("user_id", unique=True)
+        await db.large_files.create_index("user_id")
+        await db.large_files.create_index([("user_id", 1), ("status", 1)])
     except Exception:
         logging.exception("Index creation failed")
 
