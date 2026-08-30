@@ -101,3 +101,77 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "DevicePulse device-health app. Verify all REAL (non-simulated) functionality works end-to-end, especially the newly added AI Health Coach (daily card + Pro chat with memory). Simulated scan/clean numbers are by design due to mobile OS sandboxing."
+
+backend:
+  - task: "AI Health Coach - daily card"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "GET /api/coach/daily generates a personalized daily coaching card via Claude Sonnet 5, cached per user per day in coach_daily collection. Auth required (Bearer). Falls back gracefully if LLM unavailable."
+        -working: true
+        -agent: "testing"
+        -comment: "PASS with real Claude Sonnet 5. Daily card returns valid fields, per-user per-day cache confirmed. 16/16 coach tests passed (iteration_6.json)."
+  - task: "AI Health Coach - chat with memory"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "POST /api/coach/chat persists user+assistant messages in coach_messages, builds memory context from cleanup history + recent conversation, uses Claude Sonnet 5. Rate-limited per user (10/min). GET /api/coach/history returns messages, DELETE /api/coach/history clears. All IDOR-safe (identity from token)."
+        -working: true
+        -agent: "testing"
+        -comment: "PASS. Contextual replies with real LLM, memory continuity verified (2nd reply references prior context), history GET ordered, DELETE clears, 429 after 10 rapid calls, 401 without token on all coach endpoints. IDOR-safe, no _id leakage."
+  - task: "Core endpoints regression (scan/clean/history/streak/forecast/ai recommendations/auth)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "Existing endpoints previously working. Re-verify no regression after Coach additions."
+
+frontend:
+  - task: "AI Health Coach tab (daily card + chat UI)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/(tabs)/coach.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "New Coach tab with daily coaching card (free), quick-prompt chips, chat bubbles with memory. Chat Pro-gated on native (isSubscribed) but unlocked on web for preview/testing. Not yet tested."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.1"
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "AI Health Coach - daily card"
+    - "AI Health Coach - chat with memory"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "Added AI Health Coach (backend + Coach tab). Please test backend Coach endpoints end-to-end using a seeded Mongo session token (see test_credentials.md for how to insert user + session). Verify: (1) GET /api/coach/daily returns a valid card with real LLM content, (2) POST /api/coach/chat returns a contextual reply and persists messages, (3) memory works (send 2 messages, second reply should reflect awareness), (4) GET /api/coach/history returns both turns, (5) DELETE /api/coach/history clears them, (6) rate limit returns 429 after 10 rapid calls, (7) auth required (401 without token). Also quickly re-verify core endpoints (scan, clean, ai/recommendations) still work. Backend only."

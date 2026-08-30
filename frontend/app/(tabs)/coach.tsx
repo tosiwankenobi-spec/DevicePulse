@@ -94,6 +94,7 @@ export default function Coach() {
       });
       setMessages((m) => [...m, reply]);
     } catch (e) {
+      void e;
       setMessages((m) => [...m, {
         role: 'assistant',
         content: "I couldn't reach the coach right now. Please try again in a moment.",

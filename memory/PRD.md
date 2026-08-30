@@ -58,3 +58,11 @@ All device stats are simulated (server-side seed) — real deep-cleanup requires
 - Trial-ending local reminder (~24h before expiry via RevenueCat expirationDate)
 - Feature set: dashboard, smart scan, duplicates, large files, junk-by-app, insights, storage forecast, streak+freeze, badges+share, history, referrals, family plan, widget preview, guest peek
 - Status: COMPLETE per user
+
+## Update — AI Health Coach (NEW, verified)
+- New "Coach" tab (5th tab). Powered by Claude Sonnet 5 (Emergent LLM key).
+- Free: personalized DAILY coaching card (greeting + tip + focus + action button), cached per user/day (coach_daily collection).
+- Pro (gated on native; open on web for preview): CHAT with memory — remembers past cleanups/streak + recent conversation (coach_messages collection).
+- Endpoints: GET /api/coach/daily, POST /api/coach/chat, GET /api/coach/history, DELETE /api/coach/history. Auth required (IDOR-safe), rate-limited (10/min per user).
+- Backend tested: 16/16 pass with REAL Claude calls (iteration_6.json). Not mocked.
+- NOTE: scan/clean numbers remain SIMULATED by design (mobile OS sandboxing prevents real 3rd-party junk deletion/malware scan).
