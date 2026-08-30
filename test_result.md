@@ -101,3 +101,79 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "DevicePulse device-health app. Verify all REAL (non-simulated) functionality works end-to-end, especially the newly added AI Health Coach (daily card + Pro chat with memory). Simulated scan/clean numbers are by design due to mobile OS sandboxing."
+
+backend:
+  - task: "AI Health Coach - daily card"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "GET /api/coach/daily generates a personalized daily coaching card via Claude Sonnet 5, cached per user per day in coach_daily collection. Auth required (Bearer). Falls back gracefully if LLM unavailable."
+        -working: true
+        -agent: "testing"
+        -comment: "PASS with real Claude Sonnet 5. Daily card returns valid fields, per-user per-day cache confirmed. 16/16 coach tests passed (iteration_6.json)."
+  - task: "AI Health Coach - chat with memory"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "POST /api/coach/chat persists user+assistant messages in coach_messages, builds memory context from cleanup history + recent conversation, uses Claude Sonnet 5. Rate-limited per user (10/min). GET /api/coach/history returns messages, DELETE /api/coach/history clears. All IDOR-safe (identity from token)."
+        -working: true
+        -agent: "testing"
+        -comment: "PASS. Contextual replies with real LLM, memory continuity verified (2nd reply references prior context), history GET ordered, DELETE clears, 429 after 10 rapid calls, 401 without token on all coach endpoints. IDOR-safe, no _id leakage."
+  - task: "Core endpoints regression (scan/clean/history/streak/forecast/ai recommendations/auth)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "Existing endpoints previously working. Re-verify no regression after Coach additions."
+
+frontend:
+  - task: "AI Health Coach tab (daily card + chat UI)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/(tabs)/coach.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "New Coach tab with daily coaching card (free), quick-prompt chips, chat bubbles with memory. Chat Pro-gated on native (isSubscribed) but unlocked on web for preview/testing. Not yet tested."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.1"
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Daily Pulse Check"
+    - "Smart Nudges"
+    - "Family Dashboard - remote optimize (Pro)"
+    - "Duplicate photo AI - best shot selection"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "Added 4 new in-app features. BACKEND (self-verified via curl, all 200): (1) GET /api/pulse/today + POST /api/pulse/check - daily health score check + daily streak (pulse_checks collection). (2) GET /api/nudges - contextual smart nudges (reclaim/forecast/stale) based on cleanup history & storage. (3) POST /api/family/member/{id}/optimize - simulated remote optimize, bumps member health_score to 90-98 + last_optimized; GET/POST /family now include health_score+last_optimized. (4) GET /api/device/duplicates now returns photos[] with per-photo quality + best_index for AI best-shot pick. FRONTEND: Home has Daily Pulse card (tap to check, shows score+streak) and Smart Nudges list; Family screen shows per-member health score + 'Optimize remotely' button (Pro-gated on native, open on web); Duplicates shows AI best-shot badges. Please test backend endpoints (auth required, IDOR-safe) AND frontend flows. For frontend, seed a Mongo session token and set it in localStorage key used by authStorage, then navigate to Home/Family/Duplicates. Note: shareable cleanup report already existed in results.tsx (not part of this round)."
