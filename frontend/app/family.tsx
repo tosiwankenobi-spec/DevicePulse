@@ -7,8 +7,17 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
+import { useSubscription } from '@/src/lib/revenuecat';
 
 const MAX = 5;
+
+const timeAgo = (iso: string) => {
+  const diff = Date.now() - new Date(iso).getTime();
+  const h = Math.floor(diff / 3600000);
+  if (h < 1) return 'just now';
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+};
 
 export default function Family() {
   const router = useRouter();
@@ -18,6 +27,23 @@ export default function Family() {
   const [name, setName] = useState('');
   const [deviceType, setDeviceType] = useState<'phone' | 'tablet'>('phone');
   const [saving, setSaving] = useState(false);
+  const { isSubscribed } = useSubscription();
+  const proUnlocked = isSubscribed || Platform.OS === 'web';
+  const [optimizing, setOptimizing] = useState<string | null>(null);
+
+  const scoreColor = (s: number) => s >= 85 ? theme.color.brand : s >= 65 ? theme.color.warning : theme.color.error;
+
+  const optimize = async (id: string) => {
+    if (!proUnlocked) { router.push('/paywall'); return; }
+    setOptimizing(id);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      const r = await api.optimizeMember(id);
+      setMembers((prev) => prev.map((m) => m.id === id ? { ...m, health_score: r.health_score, last_optimized: r.last_optimized } : m));
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e) { console.log(e); }
+    finally { setOptimizing(null); }
+  };
 
   const load = async () => {
     try { setMembers(await api.family()); } catch (e) { console.log(e); }
@@ -80,27 +106,58 @@ export default function Family() {
 
             {/* Owner */}
             <View style={styles.memberCard}>
-              <View style={[styles.memberIcon, { backgroundColor: theme.color.brand }]}>
-                <Ionicons name="person" size={20} color={theme.color.onBrand} />
+              <View style={styles.memberTop}>
+                <View style={[styles.memberIcon, { backgroundColor: theme.color.brand }]}>
+                  <Ionicons name="person" size={20} color={theme.color.onBrand} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.memberName}>You (Owner)</Text>
+                  <Text style={styles.memberType}>This device</Text>
+                </View>
+                <View style={styles.ownerBadge}><Text style={styles.ownerBadgeText}>ADMIN</Text></View>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.memberName}>You (Owner)</Text>
-                <Text style={styles.memberType}>This device</Text>
-              </View>
-              <View style={styles.ownerBadge}><Text style={styles.ownerBadgeText}>ADMIN</Text></View>
             </View>
 
             {members.map((m) => (
               <View key={m.id} style={styles.memberCard} testID={`member-${m.id}`}>
-                <View style={[styles.memberIcon, { backgroundColor: theme.color.surface3 }]}>
-                  <Ionicons name={m.device_type === 'tablet' ? 'tablet-portrait' : 'phone-portrait'} size={20} color={theme.color.brand} />
+                <View style={styles.memberTop}>
+                  <View style={[styles.memberIcon, { backgroundColor: theme.color.surface3 }]}>
+                    <Ionicons name={m.device_type === 'tablet' ? 'tablet-portrait' : 'phone-portrait'} size={20} color={theme.color.brand} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.memberName}>{m.name}</Text>
+                    <Text style={styles.memberType}>
+                      {m.last_optimized ? `Optimized ${timeAgo(m.last_optimized)}` : `${m.device_type === 'tablet' ? 'Tablet' : 'Phone'} · Not optimized`}
+                    </Text>
+                  </View>
+                  <View style={styles.scoreBadge}>
+                    <Text style={[styles.scoreNum, { color: scoreColor(m.health_score ?? 72) }]}>{m.health_score ?? 72}</Text>
+                    <Text style={styles.scoreLbl}>health</Text>
+                  </View>
+                  <Pressable onPress={() => remove(m.id)} hitSlop={10} testID={`remove-${m.id}`} style={{ marginLeft: 10 }}>
+                    <Ionicons name="close-circle" size={22} color={theme.color.onSurface3} />
+                  </Pressable>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.memberName}>{m.name}</Text>
-                  <Text style={styles.memberType}>{m.device_type === 'tablet' ? 'Tablet' : 'Phone'} · Active</Text>
-                </View>
-                <Pressable onPress={() => remove(m.id)} hitSlop={10} testID={`remove-${m.id}`}>
-                  <Ionicons name="close-circle" size={22} color={theme.color.onSurface3} />
+                <Pressable
+                  style={[styles.optimizeBtn, (m.health_score ?? 72) >= 90 && styles.optimizeBtnDone]}
+                  onPress={() => optimize(m.id)}
+                  disabled={optimizing === m.id || (m.health_score ?? 72) >= 90}
+                  testID={`optimize-${m.id}`}
+                >
+                  {optimizing === m.id ? (
+                    <ActivityIndicator color={theme.color.brand} size="small" />
+                  ) : (
+                    <>
+                      <Ionicons
+                        name={(m.health_score ?? 72) >= 90 ? 'checkmark-circle' : proUnlocked ? 'sparkles' : 'lock-closed'}
+                        size={15}
+                        color={theme.color.brand}
+                      />
+                      <Text style={styles.optimizeText}>
+                        {(m.health_score ?? 72) >= 90 ? 'Optimized' : proUnlocked ? 'Optimize remotely' : 'Optimize (Pro)'}
+                      </Text>
+                    </>
+                  )}
                 </Pressable>
               </View>
             ))}
@@ -168,10 +225,17 @@ const styles = StyleSheet.create({
   price: { color: theme.color.onBrand, fontSize: 30, fontWeight: '800' },
   pricePer: { color: 'rgba(2,44,34,0.8)', fontSize: 14, fontWeight: '600', marginLeft: 4 },
   section: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '700', letterSpacing: 1.1, textTransform: 'uppercase', marginTop: theme.space.xl, marginBottom: theme.space.md },
-  memberCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, padding: theme.space.md, borderWidth: 1, borderColor: theme.color.border, marginBottom: theme.space.sm },
+  memberCard: { backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, padding: theme.space.md, borderWidth: 1, borderColor: theme.color.border, marginBottom: theme.space.sm },
+  memberTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   memberIcon: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   memberName: { color: theme.color.onSurface, fontSize: 15, fontWeight: '600' },
   memberType: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
+  scoreBadge: { alignItems: 'center', minWidth: 44 },
+  scoreNum: { fontSize: 20, fontWeight: '800', letterSpacing: -0.5 },
+  scoreLbl: { color: theme.color.onSurface3, fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5 },
+  optimizeBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: theme.space.md, height: 40, borderRadius: theme.radius.md, backgroundColor: theme.color.brand3, borderWidth: 1, borderColor: theme.color.border },
+  optimizeBtnDone: { opacity: 0.6 },
+  optimizeText: { color: theme.color.brand, fontSize: 13, fontWeight: '700' },
   ownerBadge: { backgroundColor: theme.color.brand3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill },
   ownerBadgeText: { color: theme.color.brand, fontSize: 10, fontWeight: '800' },
   emptySlot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: theme.radius.md, borderWidth: 1.5, borderColor: theme.color.border, borderStyle: 'dashed', paddingVertical: theme.space.md, marginBottom: theme.space.sm },

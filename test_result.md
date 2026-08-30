@@ -166,12 +166,14 @@ metadata:
 
 test_plan:
   current_focus:
-    - "AI Health Coach - daily card"
-    - "AI Health Coach - chat with memory"
+    - "Daily Pulse Check"
+    - "Smart Nudges"
+    - "Family Dashboard - remote optimize (Pro)"
+    - "Duplicate photo AI - best shot selection"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
     -agent: "main"
-    -message: "Added AI Health Coach (backend + Coach tab). Please test backend Coach endpoints end-to-end using a seeded Mongo session token (see test_credentials.md for how to insert user + session). Verify: (1) GET /api/coach/daily returns a valid card with real LLM content, (2) POST /api/coach/chat returns a contextual reply and persists messages, (3) memory works (send 2 messages, second reply should reflect awareness), (4) GET /api/coach/history returns both turns, (5) DELETE /api/coach/history clears them, (6) rate limit returns 429 after 10 rapid calls, (7) auth required (401 without token). Also quickly re-verify core endpoints (scan, clean, ai/recommendations) still work. Backend only."
+    -message: "Added 4 new in-app features. BACKEND (self-verified via curl, all 200): (1) GET /api/pulse/today + POST /api/pulse/check - daily health score check + daily streak (pulse_checks collection). (2) GET /api/nudges - contextual smart nudges (reclaim/forecast/stale) based on cleanup history & storage. (3) POST /api/family/member/{id}/optimize - simulated remote optimize, bumps member health_score to 90-98 + last_optimized; GET/POST /family now include health_score+last_optimized. (4) GET /api/device/duplicates now returns photos[] with per-photo quality + best_index for AI best-shot pick. FRONTEND: Home has Daily Pulse card (tap to check, shows score+streak) and Smart Nudges list; Family screen shows per-member health score + 'Optimize remotely' button (Pro-gated on native, open on web); Duplicates shows AI best-shot badges. Please test backend endpoints (auth required, IDOR-safe) AND frontend flows. For frontend, seed a Mongo session token and set it in localStorage key used by authStorage, then navigate to Home/Family/Duplicates. Note: shareable cleanup report already existed in results.tsx (not part of this round)."

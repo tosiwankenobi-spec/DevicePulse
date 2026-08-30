@@ -48,15 +48,22 @@ export default function Duplicates() {
             <View style={styles.summary}>
               <Text style={styles.summaryValue}>{totalMb.toFixed(0)} MB</Text>
               <Text style={styles.summaryLabel}>selected across {groups.filter(g => selected[g.id]).length} groups</Text>
+              <View style={styles.aiNote}>
+                <Ionicons name="sparkles" size={12} color={theme.color.brand} />
+                <Text style={styles.aiNoteText}>AI auto-picks the sharpest shot in each set to keep</Text>
+              </View>
             </View>
             <ScrollView contentContainerStyle={{ paddingHorizontal: theme.space.lg, paddingBottom: 100 }}>
               {groups.map((g) => (
                 <Pressable key={g.id} style={[styles.card, selected[g.id] && styles.cardActive]} onPress={() => toggle(g.id)} testID={`dup-group-${g.id}`}>
                   <Image source={g.thumbnail_url} style={styles.thumb} contentFit="cover" />
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.groupTitle}>{g.count} copies</Text>
+                    <Text style={styles.groupTitle}>{g.count} similar shots</Text>
                     <Text style={styles.groupSize}>{g.size_mb.toFixed(1)} MB · {g.taken_at}</Text>
-                    <Text style={styles.groupKeep}>Keeping best 1, removing {g.count - 1}</Text>
+                    <View style={styles.aiPickBadge}>
+                      <Ionicons name="sparkles" size={10} color={theme.color.brand} />
+                      <Text style={styles.aiPickText}>AI keeps best · {g.photos?.[g.best_index]?.quality ?? 93}% · removes {g.count - 1}</Text>
+                    </View>
                   </View>
                   <View style={[styles.checkbox, selected[g.id] && styles.checkboxActive]}>
                     {selected[g.id] && <Ionicons name="checkmark" size={14} color={theme.color.onBrand} />}
@@ -90,6 +97,10 @@ const styles = StyleSheet.create({
   groupTitle: { color: theme.color.onSurface, fontSize: 15, fontWeight: '700' },
   groupSize: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
   groupKeep: { color: theme.color.brand, fontSize: 11, marginTop: 4 },
+  aiPickBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6, alignSelf: 'flex-start', backgroundColor: theme.color.brand3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill },
+  aiPickText: { color: theme.color.brand, fontSize: 10, fontWeight: '700' },
+  aiNote: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
+  aiNoteText: { color: theme.color.onSurface2, fontSize: 12 },
   checkbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, borderColor: theme.color.border, alignItems: 'center', justifyContent: 'center' },
   checkboxActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
   bottomBar: { padding: theme.space.lg, paddingBottom: 32, borderTopWidth: 1, borderTopColor: theme.color.border, backgroundColor: theme.color.surface },

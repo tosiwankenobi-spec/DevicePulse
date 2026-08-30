@@ -116,6 +116,8 @@ class DuplicateGroup(BaseModel):
     size_mb: float
     thumbnail_url: str
     taken_at: str
+    photos: List[dict] = []
+    best_index: int = 0
 
 class LargeFile(BaseModel):
     id: str
@@ -202,6 +204,8 @@ class FamilyMember(BaseModel):
     name: str
     device_type: str  # phone, tablet
     added_at: str
+    health_score: int = 72
+    last_optimized: Optional[str] = None
 
 class AddMemberRequest(BaseModel):
     name: str
@@ -452,12 +456,21 @@ async def get_duplicates():
     ]
     groups = []
     for i, url in enumerate(thumbs):
+        count = random.randint(2, 5)
+        photos = []
+        for _ in range(count):
+            photos.append({"quality": random.randint(42, 88), "size_mb": round(random.uniform(1.4, 9.5), 1)})
+        best_index = max(range(count), key=lambda k: photos[k]["quality"])
+        photos[best_index]["quality"] = max(photos[best_index]["quality"], 93)
+        size_mb = round(sum(p["size_mb"] for p in photos), 1)
         groups.append(DuplicateGroup(
             id=str(uuid.uuid4()),
-            count=random.randint(2, 5),
-            size_mb=round(random.uniform(4.5, 42.0), 1),
+            count=count,
+            size_mb=size_mb,
             thumbnail_url=url,
             taken_at=f"2025-{random.randint(1,12):02d}-{random.randint(1,28):02d}",
+            photos=photos,
+            best_index=best_index,
         ))
     return groups
 
@@ -872,7 +885,10 @@ async def get_family(user=Depends(get_current_user)):
     device_id = user["user_id"]
     docs = await db.family.find({"owner_id": device_id}).sort("added_at", 1).to_list(50)
     return [
-        FamilyMember(id=d["id"], name=d["name"], device_type=d["device_type"], added_at=d["added_at"])
+        FamilyMember(
+            id=d["id"], name=d["name"], device_type=d["device_type"], added_at=d["added_at"],
+            health_score=d.get("health_score", 72), last_optimized=d.get("last_optimized"),
+        )
         for d in docs
     ]
 
@@ -892,6 +908,8 @@ async def add_family_member(req: AddMemberRequest, user=Depends(get_current_user
         "name": name,
         "device_type": device_type,
         "added_at": datetime.now(timezone.utc).isoformat(),
+        "health_score": random.randint(55, 82),
+        "last_optimized": None,
     }
     await db.family.insert_one(member.copy())
     try:
@@ -902,7 +920,25 @@ async def add_family_member(req: AddMemberRequest, user=Depends(get_current_user
         )
     except Exception as e:
         logging.warning(f"Family push failed (non-blocking): {e}")
-    return FamilyMember(id=member["id"], name=member["name"], device_type=member["device_type"], added_at=member["added_at"])
+    return FamilyMember(
+        id=member["id"], name=member["name"], device_type=member["device_type"], added_at=member["added_at"],
+        health_score=member["health_score"], last_optimized=member["last_optimized"],
+    )
+
+@api_router.post("/family/member/{member_id}/optimize")
+async def optimize_family_member(member_id: str, user=Depends(get_current_user)):
+    device_id = user["user_id"]
+    doc = await db.family.find_one({"owner_id": device_id, "id": member_id})
+    if not doc:
+        raise HTTPException(404, "Member not found")
+    reclaimed_mb = round(random.uniform(420, 2600), 0)
+    new_score = random.randint(90, 98)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.family.update_one(
+        {"owner_id": device_id, "id": member_id},
+        {"$set": {"health_score": new_score, "last_optimized": now}},
+    )
+    return {"id": member_id, "health_score": new_score, "reclaimed_mb": reclaimed_mb, "last_optimized": now}
 
 @api_router.delete("/family/member/{member_id}")
 async def remove_family_member(member_id: str, user=Depends(get_current_user)):
@@ -1157,6 +1193,150 @@ async def coach_chat(req: CoachChatRequest, request: Request, user=Depends(get_c
     reply_at = datetime.now(timezone.utc).isoformat()
     await db.coach_messages.insert_one({"user_id": user_id, "role": "assistant", "content": reply, "created_at": reply_at})
     return CoachMessage(role="assistant", content=reply, created_at=reply_at)
+
+
+# ==================== Daily Pulse Check ====================
+import hashlib as _hashlib
+
+async def _compute_pulse_score(uid: str, day: str) -> int:
+    docs = await db.cleanups.find({"device_id": uid}).to_list(1000)
+    reclaimed_gb = min(20.0, sum(d.get("reclaimed_mb", 0.0) for d in docs) / 1024)
+    base = 70 + int(reclaimed_gb)
+    seed = int(_hashlib.md5(f"{uid}{day}".encode()).hexdigest(), 16) % 12
+    return max(55, min(98, base + seed - 4))
+
+
+async def _pulse_streaks(uid: str):
+    from datetime import date as _date
+    docs = await db.pulse_checks.find({"user_id": uid}).to_list(3000)
+    dates = sorted({d["date"] for d in docs})
+    if not dates:
+        return 0, 0
+    dset = set(dates)
+    today = datetime.now(timezone.utc).date()
+    cur = 0
+    dd = today
+    if today.isoformat() not in dset and (today - timedelta(days=1)).isoformat() in dset:
+        dd = today - timedelta(days=1)  # streak still alive from yesterday
+    while dd.isoformat() in dset:
+        cur += 1
+        dd = dd - timedelta(days=1)
+    best = 0
+    run = 0
+    prev = None
+    for ds in dates:
+        cd = _date.fromisoformat(ds)
+        run = run + 1 if (prev is not None and (cd - prev).days == 1) else 1
+        best = max(best, run)
+        prev = cd
+    return cur, max(best, cur)
+
+
+@api_router.get("/pulse/today")
+async def pulse_today(user=Depends(get_current_user)):
+    uid = user["user_id"]
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    doc = await db.pulse_checks.find_one({"user_id": uid, "date": today}, {"_id": 0})
+    streak, best = await _pulse_streaks(uid)
+    return {
+        "checked_today": bool(doc),
+        "score": doc["score"] if doc else None,
+        "daily_streak": streak,
+        "best_streak": best,
+    }
+
+
+@api_router.post("/pulse/check")
+async def pulse_check(user=Depends(get_current_user)):
+    uid = user["user_id"]
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    existing = await db.pulse_checks.find_one({"user_id": uid, "date": today}, {"_id": 0})
+    yest = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+    prev_doc = await db.pulse_checks.find_one({"user_id": uid, "date": yest}, {"_id": 0})
+    if existing:
+        score = existing["score"]
+        already = True
+    else:
+        score = await _compute_pulse_score(uid, today)
+        await db.pulse_checks.insert_one({"user_id": uid, "date": today, "score": score})
+        already = False
+    streak, best = await _pulse_streaks(uid)
+    delta = (score - prev_doc["score"]) if prev_doc else 0
+    return {
+        "score": score,
+        "daily_streak": streak,
+        "best_streak": best,
+        "delta": delta,
+        "already_checked": already,
+    }
+
+
+# ==================== Smart Nudges ====================
+@api_router.get("/nudges")
+async def get_nudges(user=Depends(get_current_user)):
+    uid = user["user_id"]
+    docs = await db.cleanups.find({"device_id": uid}).sort("completed_at", -1).to_list(1000)
+    reclaimed_gb = min(20.0, sum(d.get("reclaimed_mb", 0.0) for d in docs) / 1024)
+
+    total_gb = 128.0
+    used_gb = max(20.0, 94.2 - reclaimed_gb)
+    free_gb = total_gb - used_gb
+    storage_pct = round(used_gb / total_gb * 100)
+    days_until_full = int(free_gb / 0.72) if free_gb > 0 else 0
+
+    # stable-ish reclaimable estimate that shrinks as they clean
+    seed = int(_hashlib.md5(f"{uid}nudge".encode()).hexdigest(), 16) % 900
+    reclaimable_mb = max(240, int((storage_pct / 100) * 3200) + seed - 300)
+
+    # days since last cleanup
+    days_since = None
+    if docs:
+        try:
+            last = datetime.fromisoformat(docs[0]["completed_at"])
+            days_since = (datetime.now(timezone.utc) - last.replace(tzinfo=timezone.utc)).days
+        except Exception:
+            days_since = None
+
+    nudges = []
+    if reclaimable_mb >= 600:
+        nudges.append({
+            "id": "reclaim",
+            "type": "reclaim",
+            "priority": 3,
+            "tone": "brand",
+            "icon": "flash",
+            "title": f"You could reclaim {reclaimable_mb/1024:.1f} GB right now",
+            "body": "A quick Smart Scan clears junk, cache and duplicates in seconds.",
+            "action_label": "Reclaim now",
+            "action_route": "/smart-scan",
+        })
+    if days_until_full <= 14:
+        nudges.append({
+            "id": "forecast",
+            "type": "forecast",
+            "priority": 4,
+            "tone": "warning",
+            "icon": "trending-up",
+            "title": f"Storage full in ~{days_until_full} days",
+            "body": "At your current pace you're running low. Free space now to stay fast.",
+            "action_label": "See forecast",
+            "action_route": "/forecast",
+        })
+    if days_since is None or days_since >= 7:
+        nudges.append({
+            "id": "stale",
+            "type": "stale",
+            "priority": 2,
+            "tone": "info",
+            "icon": "time",
+            "title": "It's been a while since your last cleanup",
+            "body": "A weekly scan keeps your phone running like new.",
+            "action_label": "Run scan",
+            "action_route": "/smart-scan",
+        })
+
+    nudges.sort(key=lambda n: n["priority"], reverse=True)
+    return {"nudges": nudges[:3], "storage_pct": storage_pct, "days_until_full": days_until_full}
 
 
 app.include_router(api_router)

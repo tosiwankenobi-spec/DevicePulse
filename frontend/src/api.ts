@@ -74,4 +74,15 @@ export const api = {
   coachChat: (body: { message: string; health_score?: number; storage_used_pct?: number; battery_health_pct?: number }) =>
     req<any>('/coach/chat', { method: 'POST', body: JSON.stringify(body) }),
   clearCoach: () => req<any>('/coach/history', { method: 'DELETE' }),
+
+  // Daily Pulse Check
+  pulseToday: () => req<any>('/pulse/today'),
+  pulseCheck: () => req<any>('/pulse/check', { method: 'POST' }),
+
+  // Smart Nudges
+  nudges: () => req<any>('/nudges'),
+
+  // Family optimize (Pro)
+  optimizeMember: (memberId: string) =>
+    req<any>(`/family/member/${memberId}/optimize`, { method: 'POST' }),
 };

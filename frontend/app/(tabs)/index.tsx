@@ -37,6 +37,9 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState(false);
   const [streak, setStreak] = useState<number | null>(null);
   const [forecastDays, setForecastDays] = useState<number | null>(null);
+  const [pulse, setPulse] = useState<any>(null);
+  const [checkingPulse, setCheckingPulse] = useState(false);
+  const [nudges, setNudges] = useState<any[]>([]);
 
   const load = async () => {
     try {
@@ -49,6 +52,23 @@ export default function Home() {
       setStreak(s.current_streak_weeks);
       setForecastDays(f.days_until_full);
     } catch (e) { console.log(e); }
+    try {
+      const [p, n] = await Promise.all([api.pulseToday(), api.nudges()]);
+      setPulse(p);
+      setNudges(n.nudges || []);
+    } catch (e) { console.log(e); }
+  };
+
+  const onDailyPulse = async () => {
+    if (pulse?.checked_today || checkingPulse) return;
+    setCheckingPulse(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      const r = await api.pulseCheck();
+      setPulse({ checked_today: true, score: r.score, daily_streak: r.daily_streak, best_streak: r.best_streak });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e) { console.log(e); }
+    finally { setCheckingPulse(false); }
   };
 
   const loadRecs = async (h: Health) => {
@@ -104,6 +124,7 @@ export default function Home() {
   }
 
   const storagePct = Math.round((health.storage_used_gb / health.storage_total_gb) * 100);
+  const toneColor = (t: string) => t === 'warning' ? theme.color.warning : t === 'info' ? theme.color.info : theme.color.brand;
   const stats = [
     { label: 'Storage', value: `${storagePct}%`, sub: `${health.storage_used_gb.toFixed(1)} / ${health.storage_total_gb} GB`, icon: 'server-outline' as const, color: theme.color.info, route: '/insights' },
     { label: 'Memory', value: `${health.ram_used_pct}%`, sub: 'RAM in use', icon: 'hardware-chip-outline' as const, color: '#8B5CF6', route: null },
@@ -155,6 +176,37 @@ export default function Home() {
             </Animated.View>
           )}
 
+          {/* Daily Pulse Check */}
+          <Animated.View entering={FadeInDown}>
+            <Pressable onPress={onDailyPulse} disabled={pulse?.checked_today || checkingPulse}>
+              <GlassCard style={styles.pulseCard} testID="daily-pulse-card">
+                <View style={styles.pulseIconWrap}>
+                  <Ionicons name="pulse" size={22} color={theme.color.brand} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pulseTitle}>Daily Pulse</Text>
+                  {pulse?.checked_today ? (
+                    <Text style={styles.pulseSub}>
+                      Today&apos;s score · 🔥 {pulse.daily_streak} day{pulse.daily_streak === 1 ? '' : 's'} streak
+                    </Text>
+                  ) : (
+                    <Text style={styles.pulseSub}>Tap for your one-glance health check</Text>
+                  )}
+                </View>
+                {checkingPulse ? (
+                  <ActivityIndicator color={theme.color.brand} />
+                ) : pulse?.checked_today ? (
+                  <Text style={styles.pulseScore} testID="daily-pulse-score">{pulse.score}</Text>
+                ) : (
+                  <View style={styles.pulseCta}>
+                    <Text style={styles.pulseCtaText}>Check</Text>
+                    <Ionicons name="arrow-forward" size={14} color={theme.color.onBrand} />
+                  </View>
+                )}
+              </GlassCard>
+            </Pressable>
+          </Animated.View>
+
           {/* Hero Ring */}
           <GlassCard style={styles.hero} testID="home-hero-card">
             <View style={{ alignItems: 'center' }}>
@@ -172,19 +224,24 @@ export default function Home() {
             </View>
           </GlassCard>
 
-          {/* Smart reminder banner */}
-          {storagePct >= 70 && (
-            <Pressable style={styles.reminderBanner} onPress={() => router.push('/smart-scan')} testID="home-reminder-banner">
-              <View style={styles.reminderIcon}>
-                <Ionicons name="notifications" size={18} color={theme.color.warning} />
+          {/* Smart Nudges */}
+          {nudges.map((n) => (
+            <Pressable
+              key={n.id}
+              style={[styles.reminderBanner, { borderColor: toneColor(n.tone) + '55' }]}
+              onPress={() => router.push(n.action_route as any)}
+              testID={`nudge-${n.id}`}
+            >
+              <View style={[styles.reminderIcon, { backgroundColor: toneColor(n.tone) + '22' }]}>
+                <Ionicons name={n.icon as any} size={18} color={toneColor(n.tone)} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.reminderTitle}>Storage is filling up</Text>
-                <Text style={styles.reminderBody}>You&apos;re at {storagePct}% — a quick scan can free up space.</Text>
+                <Text style={styles.reminderTitle}>{n.title}</Text>
+                <Text style={styles.reminderBody}>{n.body}</Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={theme.color.onSurface3} />
             </Pressable>
-          )}
+          ))}
 
           {/* Quick access: Streak + Forecast */}
           <View style={styles.quickRow}>
@@ -300,4 +357,11 @@ const styles = StyleSheet.create({
   welcomeIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(16,185,129,0.18)', alignItems: 'center', justifyContent: 'center' },
   welcomeTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
   welcomeBody: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
+  pulseCard: { marginHorizontal: theme.space.lg, marginTop: theme.space.sm, marginBottom: theme.space.xs, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  pulseIconWrap: { width: 44, height: 44, borderRadius: 12, backgroundColor: 'rgba(16,185,129,0.12)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: theme.color.border },
+  pulseTitle: { color: theme.color.onSurface, fontSize: 16, fontWeight: '800' },
+  pulseSub: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
+  pulseScore: { color: theme.color.brand, fontSize: 30, fontWeight: '800', letterSpacing: -1 },
+  pulseCta: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: theme.color.brand, paddingHorizontal: 16, paddingVertical: 9, borderRadius: theme.radius.pill },
+  pulseCtaText: { color: theme.color.onBrand, fontSize: 14, fontWeight: '800' },
 });

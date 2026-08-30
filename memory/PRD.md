@@ -66,3 +66,12 @@ All device stats are simulated (server-side seed) — real deep-cleanup requires
 - Endpoints: GET /api/coach/daily, POST /api/coach/chat, GET /api/coach/history, DELETE /api/coach/history. Auth required (IDOR-safe), rate-limited (10/min per user).
 - Backend tested: 16/16 pass with REAL Claude calls (iteration_6.json). Not mocked.
 - NOTE: scan/clean numbers remain SIMULATED by design (mobile OS sandboxing prevents real 3rd-party junk deletion/malware scan).
+
+## Update — Habit & Retention + Pro batch (NEW, verified iter7)
+- Daily Pulse Check: morning one-glance health score + daily streak (pulse_checks). Home card. Free.
+- Smart Nudges: contextual reclaim/forecast/stale banners from /api/nudges (data-driven, max 3). Home. Free.
+- Family Dashboard upgrade: per-member health score + "Optimize remotely" (Pro-gated on native, open on web). /family/member/{id}/optimize.
+- Duplicate photo AI: /device/duplicates now returns photos[] quality + best_index; UI shows AI best-shot badges.
+- Shareable Cleanup Report: already existed in results.tsx (no work needed).
+- Tested: 16/16 backend + full frontend flows pass (iteration_7.json). Not mocked.
+- NOT built this round (need native production build): Live home-screen widget, background Auto-Clean scheduling.
