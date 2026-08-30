@@ -2,6 +2,10 @@ import { getToken } from './authStorage';
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
+// Public, human-viewable page for a shared Cleanup Report (GET /r/{code},
+// outside the /api prefix) — this is the link that goes in the share sheet.
+export const reportShareUrl = (shareCode: string) => `${BASE}/r/${shareCode}`;
+
 let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: () => void) { onUnauthorized = fn; }
 
@@ -40,9 +44,20 @@ export const api = {
   health: () => req<any>('/device/health'),
   storage: () => req<any>('/device/storage'),
   duplicates: () => req<any[]>('/device/duplicates'),
+  scanDuplicates: () => req<any>('/device/duplicates/scan', { method: 'POST' }),
+  removeDuplicates: (groupIds: string[]) =>
+    req<any>('/device/duplicates/remove', { method: 'POST', body: JSON.stringify({ group_ids: groupIds }) }),
   largeFiles: () => req<any[]>('/device/large-files'),
+  scanLargeFiles: () => req<any>('/device/large-files/scan', { method: 'POST' }),
+  deleteLargeFiles: (fileIds: string[]) =>
+    req<any>('/device/large-files/delete', { method: 'POST', body: JSON.stringify({ file_ids: fileIds }) }),
   battery: () => req<any>('/device/battery'),
+  optimizeBattery: () => req<any>('/device/battery/optimize', { method: 'POST' }),
+  memory: () => req<any>('/device/memory'),
+  boostMemory: () => req<any>('/device/memory/boost', { method: 'POST' }),
   security: () => req<any>('/device/security'),
+  scanSecurity: () => req<any>('/device/security/scan', { method: 'POST' }),
+  resolveSecurityFinding: (id: string) => req<any>(`/device/security/findings/${id}/resolve`, { method: 'POST' }),
   runScan: () => req<any>('/device/scan', { method: 'POST' }),
   runClean: (body: { categories: string[]; reclaimable_mb: number }) =>
     req<any>('/device/clean', { method: 'POST', body: JSON.stringify(body) }),
@@ -62,11 +77,32 @@ export const api = {
   cacheBreakdown: () => req<any>('/device/cache-breakdown'),
   healthTrend: () => req<any>('/device/health-trend'),
   forecast: () => req<any>('/forecast'),
-  family: () => req<any[]>('/family'),
-  addMember: (body: { name: string; device_type: string }) =>
-    req<any>('/family/member', { method: 'POST', body: JSON.stringify(body) }),
-  removeMember: (memberId: string) =>
-    req<any>(`/family/member/${memberId}`, { method: 'DELETE' }),
+  forecastQuickFix: () => req<any>('/forecast/quick-fix', { method: 'POST' }),
+  pulseDaily: () => req<any>('/pulse/daily'),
+  widgetSummary: () => req<any>('/widget/summary'),
+  activeNudge: () => req<any>('/nudges/active'),
+  dismissNudge: (type: string) => req<any>(`/nudges/${type}/dismiss`, { method: 'POST' }),
+  familyGroup: () => req<any>('/family/group'),
+  createFamily: () => req<any>('/family/create', { method: 'POST' }),
+  joinFamily: (inviteCode: string) =>
+    req<any>('/family/join', { method: 'POST', body: JSON.stringify({ invite_code: inviteCode }) }),
+  leaveFamily: () => req<any>('/family/leave', { method: 'POST' }),
+  familyRemoteClean: (memberUserId: string) =>
+    req<any>(`/family/remote-clean/${memberUserId}`, { method: 'POST' }),
+  reportMine: () => req<any>('/reports/mine'),
+  generateReport: () => req<any>('/reports/generate', { method: 'POST' }),
+
+  // Entitlements (Pro) — synced from the real RevenueCat state, see revenuecat.tsx
+  myEntitlement: () => req<any>('/entitlements/me'),
+  syncEntitlement: (isPro: boolean) =>
+    req<any>('/entitlements/sync', { method: 'POST', body: JSON.stringify({ is_pro: isPro }) }),
+
+  // Auto-Clean Scheduling (Pro-only)
+  autoCleanSchedule: () => req<any>('/autoclean/schedule'),
+  saveAutoCleanSchedule: (body: { enabled: boolean; frequency: string; day_of_week?: number; categories: string[] }) =>
+    req<any>('/autoclean/schedule', { method: 'PUT', body: JSON.stringify(body) }),
+  deleteAutoCleanSchedule: () => req<any>('/autoclean/schedule', { method: 'DELETE' }),
+  runAutoCleanIfDue: () => req<any>('/autoclean/run-if-due', { method: 'POST' }),
 
   // AI Health Coach
   coachDaily: () => req<any>('/coach/daily'),
@@ -74,15 +110,6 @@ export const api = {
   coachChat: (body: { message: string; health_score?: number; storage_used_pct?: number; battery_health_pct?: number }) =>
     req<any>('/coach/chat', { method: 'POST', body: JSON.stringify(body) }),
   clearCoach: () => req<any>('/coach/history', { method: 'DELETE' }),
-
-  // Daily Pulse Check
-  pulseToday: () => req<any>('/pulse/today'),
-  pulseCheck: () => req<any>('/pulse/check', { method: 'POST' }),
-
-  // Smart Nudges
-  nudges: () => req<any>('/nudges'),
-
-  // Family optimize (Pro)
-  optimizeMember: (memberId: string) =>
-    req<any>(`/family/member/${memberId}/optimize`, { method: 'POST' }),
+  coachInsights: () => req<any[]>('/coach/insights'),
+  ackCoachInsight: (key: string) => req<any>(`/coach/insights/${key}/ack`, { method: 'POST' }),
 };

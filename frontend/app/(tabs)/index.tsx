@@ -28,6 +28,26 @@ type Health = {
 
 type Rec = { title: string; description: string; impact: string };
 
+type Pulse = {
+  date: string;
+  score: number;
+  status: string;
+  headline: string;
+  delta: number;
+  storage_used_pct: number;
+  battery_pct: number;
+  security_ok: boolean;
+};
+
+type Nudge = {
+  type: string;
+  title: string;
+  message: string;
+  cta_label: string;
+  cta_route: string;
+  priority: number;
+};
+
 export default function Home() {
   const router = useRouter();
   const { user, justLoggedIn, clearJustLoggedIn } = useAuth();
@@ -37,9 +57,10 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState(false);
   const [streak, setStreak] = useState<number | null>(null);
   const [forecastDays, setForecastDays] = useState<number | null>(null);
-  const [pulse, setPulse] = useState<any>(null);
-  const [checkingPulse, setCheckingPulse] = useState(false);
-  const [nudges, setNudges] = useState<any[]>([]);
+  const [pulse, setPulse] = useState<Pulse | null>(null);
+  const [nudge, setNudge] = useState<Nudge | null>(null);
+  const [dismissingNudge, setDismissingNudge] = useState(false);
+  const [fixingNudge, setFixingNudge] = useState(false);
 
   const load = async () => {
     try {
@@ -48,27 +69,49 @@ export default function Home() {
     } catch (e) { console.log(e); }
     try {
       const id = await getDeviceId();
-      const [s, f] = await Promise.all([api.streak(), api.forecast()]);
+      const [s, f, p, n] = await Promise.all([api.streak(), api.forecast(), api.pulseDaily(), api.activeNudge()]);
       setStreak(s.current_streak_weeks);
       setForecastDays(f.days_until_full);
-    } catch (e) { console.log(e); }
-    try {
-      const [p, n] = await Promise.all([api.pulseToday(), api.nudges()]);
       setPulse(p);
-      setNudges(n.nudges || []);
+      setNudge(n);
     } catch (e) { console.log(e); }
   };
 
-  const onDailyPulse = async () => {
-    if (pulse?.checked_today || checkingPulse) return;
-    setCheckingPulse(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  const onDismissNudge = async () => {
+    if (!nudge || dismissingNudge) return;
+    const dismissedType = nudge.type;
+    setNudge(null); // optimistic — a Smart Nudge should disappear the moment you dismiss it
+    setDismissingNudge(true);
     try {
-      const r = await api.pulseCheck();
-      setPulse({ checked_today: true, score: r.score, daily_streak: r.daily_streak, best_streak: r.best_streak });
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (e) { console.log(e); }
-    finally { setCheckingPulse(false); }
+      await api.dismissNudge(dismissedType);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setDismissingNudge(false);
+    }
+  };
+
+  // Predictive Storage's "one-tap fix": tapping the storage_forecast nudge
+  // runs the fix immediately instead of just navigating to the Forecast
+  // screen — that's what makes it genuinely one tap.
+  const onNudgePress = async () => {
+    if (!nudge) return;
+    if (nudge.type !== 'storage_forecast') {
+      router.push(nudge.cta_route as any);
+      return;
+    }
+    if (fixingNudge) return;
+    setFixingNudge(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    try {
+      const result = await api.forecastQuickFix();
+      setNudge(null);
+      if (result?.forecast?.days_until_full != null) setForecastDays(result.forecast.days_until_full);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setFixingNudge(false);
+    }
   };
 
   const loadRecs = async (h: Health) => {
@@ -96,9 +139,11 @@ export default function Home() {
     }
   }, [justLoggedIn]);
   useFocusEffect(React.useCallback(() => {
-    getDeviceId().then((id) => Promise.all([api.streak(), api.forecast()]).then(([s, f]) => {
+    getDeviceId().then((id) => Promise.all([api.streak(), api.forecast(), api.pulseDaily(), api.activeNudge()]).then(([s, f, p, n]) => {
       setStreak(s.current_streak_weeks);
       setForecastDays(f.days_until_full);
+      setPulse(p);
+      setNudge(n);
     }).catch(() => {}));
   }, []));
   useEffect(() => { if (health && !recs) loadRecs(health); }, [health]);
@@ -124,7 +169,6 @@ export default function Home() {
   }
 
   const storagePct = Math.round((health.storage_used_gb / health.storage_total_gb) * 100);
-  const toneColor = (t: string) => t === 'warning' ? theme.color.warning : t === 'info' ? theme.color.info : theme.color.brand;
   const stats = [
     { label: 'Storage', value: `${storagePct}%`, sub: `${health.storage_used_gb.toFixed(1)} / ${health.storage_total_gb} GB`, icon: 'server-outline' as const, color: theme.color.info, route: '/insights' },
     { label: 'Memory', value: `${health.ram_used_pct}%`, sub: 'RAM in use', icon: 'hardware-chip-outline' as const, color: '#8B5CF6', route: null },
@@ -158,6 +202,39 @@ export default function Home() {
             </Pressable>
           </View>
 
+          {/* Daily Pulse Check — one-glance morning score, the daily ritual hook */}
+          {pulse && (
+            <Animated.View entering={FadeInDown}>
+              <Pressable style={styles.pulseCard} onPress={() => router.push('/trends')} testID="home-pulse-card">
+                <View style={styles.pulseIconWrap}>
+                  <Ionicons name="checkmark-circle" size={22} color={theme.color.brand} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={styles.pulseTitle}>Today&apos;s Pulse Check</Text>
+                    {pulse.delta !== 0 && (
+                      <View style={[styles.pulseDeltaPill, { backgroundColor: (pulse.delta > 0 ? theme.color.success : theme.color.error) + '22' }]}>
+                        <Ionicons
+                          name={pulse.delta > 0 ? 'arrow-up' : 'arrow-down'}
+                          size={10}
+                          color={pulse.delta > 0 ? theme.color.success : theme.color.error}
+                        />
+                        <Text style={[styles.pulseDeltaText, { color: pulse.delta > 0 ? theme.color.success : theme.color.error }]}>
+                          {Math.abs(pulse.delta)}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.pulseHeadline} numberOfLines={2}>{pulse.headline}</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={styles.pulseScore}>{pulse.score}</Text>
+                  <Text style={styles.pulseScoreLabel}>{pulse.status}</Text>
+                </View>
+              </Pressable>
+            </Animated.View>
+          )}
+
           {/* Welcome back banner */}
           {justLoggedIn && user && (
             <Animated.View entering={FadeInDown} style={styles.welcomeBanner} testID="welcome-banner">
@@ -176,37 +253,6 @@ export default function Home() {
             </Animated.View>
           )}
 
-          {/* Daily Pulse Check */}
-          <Animated.View entering={FadeInDown}>
-            <Pressable onPress={onDailyPulse} disabled={pulse?.checked_today || checkingPulse}>
-              <GlassCard style={styles.pulseCard} testID="daily-pulse-card">
-                <View style={styles.pulseIconWrap}>
-                  <Ionicons name="pulse" size={22} color={theme.color.brand} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.pulseTitle}>Daily Pulse</Text>
-                  {pulse?.checked_today ? (
-                    <Text style={styles.pulseSub}>
-                      Today&apos;s score · 🔥 {pulse.daily_streak} day{pulse.daily_streak === 1 ? '' : 's'} streak
-                    </Text>
-                  ) : (
-                    <Text style={styles.pulseSub}>Tap for your one-glance health check</Text>
-                  )}
-                </View>
-                {checkingPulse ? (
-                  <ActivityIndicator color={theme.color.brand} />
-                ) : pulse?.checked_today ? (
-                  <Text style={styles.pulseScore} testID="daily-pulse-score">{pulse.score}</Text>
-                ) : (
-                  <View style={styles.pulseCta}>
-                    <Text style={styles.pulseCtaText}>Check</Text>
-                    <Ionicons name="arrow-forward" size={14} color={theme.color.onBrand} />
-                  </View>
-                )}
-              </GlassCard>
-            </Pressable>
-          </Animated.View>
-
           {/* Hero Ring */}
           <GlassCard style={styles.hero} testID="home-hero-card">
             <View style={{ alignItems: 'center' }}>
@@ -224,24 +270,35 @@ export default function Home() {
             </View>
           </GlassCard>
 
-          {/* Smart Nudges */}
-          {nudges.map((n) => (
-            <Pressable
-              key={n.id}
-              style={[styles.reminderBanner, { borderColor: toneColor(n.tone) + '55' }]}
-              onPress={() => router.push(n.action_route as any)}
-              testID={`nudge-${n.id}`}
-            >
-              <View style={[styles.reminderIcon, { backgroundColor: toneColor(n.tone) + '22' }]}>
-                <Ionicons name={n.icon as any} size={18} color={toneColor(n.tone)} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.reminderTitle}>{n.title}</Text>
-                <Text style={styles.reminderBody}>{n.body}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={theme.color.onSurface3} />
-            </Pressable>
-          ))}
+          {/* Smart Nudge — surfaced by the backend only when it actually
+              matters (never more than one at a time), not on every open */}
+          {nudge && (
+            <Animated.View entering={FadeInDown}>
+              <Pressable
+                style={styles.reminderBanner}
+                onPress={onNudgePress}
+                disabled={fixingNudge}
+                testID="home-nudge-banner"
+              >
+                <View style={styles.reminderIcon}>
+                  {fixingNudge ? (
+                    <ActivityIndicator size="small" color={theme.color.warning} />
+                  ) : (
+                    <Ionicons name="notifications" size={18} color={theme.color.warning} />
+                  )}
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.reminderTitle}>{nudge.title}</Text>
+                  <Text style={styles.reminderBody}>
+                    {fixingNudge ? 'Fixing now…' : nudge.message}
+                  </Text>
+                </View>
+                <Pressable onPress={onDismissNudge} hitSlop={10} testID="home-nudge-dismiss">
+                  <Ionicons name="close" size={18} color={theme.color.onSurface3} />
+                </Pressable>
+              </Pressable>
+            </Animated.View>
+          )}
 
           {/* Quick access: Streak + Forecast */}
           <View style={styles.quickRow}>
@@ -353,15 +410,16 @@ const styles = StyleSheet.create({
   quickIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   quickLabel: { color: theme.color.onSurface2, fontSize: 13, flex: 1 },
   quickValue: { color: theme.color.onSurface, fontSize: 18, fontWeight: '800' },
+  pulseCard: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: theme.space.lg, marginBottom: theme.space.sm, padding: theme.space.md, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.border },
+  pulseIconWrap: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(16,185,129,0.12)', alignItems: 'center', justifyContent: 'center' },
+  pulseTitle: { color: theme.color.onSurface, fontSize: 13, fontWeight: '700' },
+  pulseHeadline: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
+  pulseScore: { color: theme.color.onSurface, fontSize: 20, fontWeight: '800' },
+  pulseScoreLabel: { color: theme.color.onSurface3, fontSize: 10, marginTop: 1 },
+  pulseDeltaPill: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 6, paddingVertical: 2, borderRadius: theme.radius.pill },
+  pulseDeltaText: { fontSize: 10, fontWeight: '700' },
   welcomeBanner: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: theme.space.lg, marginBottom: theme.space.sm, padding: theme.space.md, backgroundColor: theme.color.brand3, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.brand + '55' },
   welcomeIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(16,185,129,0.18)', alignItems: 'center', justifyContent: 'center' },
   welcomeTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
   welcomeBody: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
-  pulseCard: { marginHorizontal: theme.space.lg, marginTop: theme.space.sm, marginBottom: theme.space.xs, flexDirection: 'row', alignItems: 'center', gap: 12 },
-  pulseIconWrap: { width: 44, height: 44, borderRadius: 12, backgroundColor: 'rgba(16,185,129,0.12)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: theme.color.border },
-  pulseTitle: { color: theme.color.onSurface, fontSize: 16, fontWeight: '800' },
-  pulseSub: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
-  pulseScore: { color: theme.color.brand, fontSize: 30, fontWeight: '800', letterSpacing: -1 },
-  pulseCta: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: theme.color.brand, paddingHorizontal: 16, paddingVertical: 9, borderRadius: theme.radius.pill },
-  pulseCtaText: { color: theme.color.onBrand, fontSize: 14, fontWeight: '800' },
 });
