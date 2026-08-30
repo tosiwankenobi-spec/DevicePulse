@@ -4,6 +4,7 @@ import Purchases, { LOG_LEVEL } from "react-native-purchases";
 import type { CustomerInfo, PurchasesPackage } from "react-native-purchases";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { scheduleTrialReminder } from "../trialReminder";
+import { api } from "../api";
 
 const REVENUECAT_TEST_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY;
 const REVENUECAT_IOS_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
@@ -79,6 +80,20 @@ function useSubscriptionContext() {
 
   const originalAppUserId = customerInfoQuery.data?.originalAppUserId;
   const identityReady = !!originalAppUserId && !originalAppUserId.startsWith("$RCAnonymousID:");
+
+  // Keep the backend's stored `is_pro` entitlement flag in sync with the real
+  // RevenueCat state. Every Pro-gated backend endpoint (e.g. Auto-Clean
+  // Scheduling) checks this stored flag rather than trusting the client, so
+  // it must be pushed whenever RevenueCat's view of the subscription changes.
+  // Guarded on identityReady so we never sync before the user's real
+  // identity (as opposed to an anonymous RevenueCat ID) is known.
+  useEffect(() => {
+    if (!rcEnabled || !identityReady) return;
+    api.syncEntitlement(isSubscribed).catch(() => {
+      // Best-effort: a failed sync just means the backend keeps its last
+      // known value until the next successful sync (e.g. next app open).
+    });
+  }, [rcEnabled, identityReady, isSubscribed]);
 
   return {
     customerInfo: customerInfoQuery.data,
