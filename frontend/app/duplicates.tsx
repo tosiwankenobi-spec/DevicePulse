@@ -127,7 +127,7 @@ export default function Duplicates() {
           <ScrollView contentContainerStyle={{ paddingHorizontal: theme.space.lg, paddingBottom: 40, flexGrow: 1, justifyContent: 'center' }}>
             <View style={styles.emptyCard}>
               <Ionicons name="checkmark-circle" size={40} color={theme.color.brand} />
-              <Text style={styles.emptyTitle}>You're all caught up</Text>
+              <Text style={styles.emptyTitle}>You&apos;re all caught up</Text>
               <Text style={styles.emptyBody}>No duplicate photos detected right now. Run another AI scan any time to check for new ones.</Text>
               <Pressable style={styles.scanAgainBtn} onPress={onScan} disabled={scanning} testID="dup-scan-again">
                 {scanning ? <ActivityIndicator color={theme.color.onSurface} /> : <Text style={styles.scanAgainText}>Scan again</Text>}

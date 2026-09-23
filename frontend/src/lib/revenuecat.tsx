@@ -12,16 +12,19 @@ const REVENUECAT_ANDROID_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_AP
 
 export const REVENUECAT_ENTITLEMENT_IDENTIFIER = "pro";
 
-export const rcEnabled = Platform.OS !== "web" || __DEV__;
-
-function getRevenueCatApiKey() {
-  if (!REVENUECAT_TEST_API_KEY || !REVENUECAT_IOS_API_KEY || !REVENUECAT_ANDROID_API_KEY) {
-    throw new Error("RevenueCat public API keys not found — run the Setup section first");
-  }
+function platformApiKey() {
   if (Platform.OS === "web" || __DEV__) return REVENUECAT_TEST_API_KEY;
   if (Platform.OS === "ios") return REVENUECAT_IOS_API_KEY;
   if (Platform.OS === "android") return REVENUECAT_ANDROID_API_KEY;
-  return REVENUECAT_TEST_API_KEY;
+  return undefined;
+}
+
+export const rcEnabled = Boolean(platformApiKey());
+
+function getRevenueCatApiKey() {
+  const key = platformApiKey();
+  if (!key) throw new Error(`RevenueCat API key is not configured for ${Platform.OS}`);
+  return key;
 }
 
 export function initializeRevenueCat() {
@@ -76,7 +79,7 @@ function useSubscriptionContext() {
   useEffect(() => {
     if (!rcEnabled) return;
     scheduleTrialReminder(proEntitlement);
-  }, [proEntitlement?.expirationDate, proEntitlement?.periodType]);
+  }, [proEntitlement]);
 
   const originalAppUserId = customerInfoQuery.data?.originalAppUserId;
   const identityReady = !!originalAppUserId && !originalAppUserId.startsWith("$RCAnonymousID:");
@@ -93,7 +96,7 @@ function useSubscriptionContext() {
       // Best-effort: a failed sync just means the backend keeps its last
       // known value until the next successful sync (e.g. next app open).
     });
-  }, [rcEnabled, identityReady, isSubscribed]);
+  }, [identityReady, isSubscribed]);
 
   return {
     customerInfo: customerInfoQuery.data,

@@ -90,7 +90,7 @@ export default function RootLayout() {
     })();
 
     return () => { tapSub.remove(); };
-  }, []);
+  }, [router]);
 
   const closeNudge = async (openSettings: boolean) => {
     await AsyncStorage.setItem("pushNudgeAt", String(Date.now()));

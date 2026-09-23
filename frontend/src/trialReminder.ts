@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 
 const SCHEDULED_KEY = 'dp:trialReminderFor';
 const IDENTIFIER = 'trial-ending-reminder';
@@ -12,8 +13,6 @@ const IDENTIFIER = 'trial-ending-reminder';
 export async function scheduleTrialReminder(entitlement: any | undefined): Promise<void> {
   if (Platform.OS === 'web') return;
   try {
-    const Notifications = require('expo-notifications');
-
     const isTrial =
       entitlement &&
       String(entitlement.periodType ?? '').toLowerCase().includes('trial') &&
@@ -45,7 +44,10 @@ export async function scheduleTrialReminder(entitlement: any | undefined): Promi
         body: "Heads up — your DevicePulse Pro free trial ends in 24 hours. Keep Pro, or cancel anytime so you're not charged.",
         data: { action_url: '/paywall' },
       },
-      trigger: { date: fireDate },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: fireDate,
+      },
     });
     await AsyncStorage.setItem(SCHEDULED_KEY, entitlement.expirationDate);
   } catch (e) {

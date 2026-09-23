@@ -128,7 +128,7 @@ export default function WidgetPreview() {
           <View style={styles.infoCard}>
             <Ionicons name="information-circle-outline" size={20} color={theme.color.info} />
             <Text style={styles.infoText}>
-              This preview is live — it's pulling your real health score right now, and refreshes automatically like the real widget will. Add one from your home screen once you install the built app.
+              This preview is live — it&apos;s pulling your real health score right now, and refreshes automatically like the real widget will. Add one from your home screen once you install the built app.
             </Text>
           </View>
 

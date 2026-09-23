@@ -6,7 +6,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '@/src/api';
-import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
 
 export default function Forecast() {
@@ -18,7 +17,6 @@ export default function Forecast() {
 
   useEffect(() => {
     (async () => {
-      const id = await getDeviceId();
       try { setData(await api.forecast()); } catch (e) { console.log(e); }
       finally { setLoading(false); }
     })();

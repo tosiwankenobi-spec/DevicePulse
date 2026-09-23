@@ -1,16 +1,17 @@
 {
   "expo": {
-    "name": "frontend",
-    "slug": "frontend",
-    "version": "1.0.0",
+    "name": "DevicePulse",
+    "slug": "devicepulse",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "scheme": "devicepulse",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.emergent.verolanepulse.e73nen"
+      "bundleIdentifier": "ca.verolane.devicepulse",
+      "buildNumber": "4"
     },
     "android": {
       "adaptiveIcon": {
@@ -19,7 +20,7 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "ca.verolane.devicepulse",
-      "versionCode": 3
+      "versionCode": 4
     },
     "web": {
       "bundler": "metro",

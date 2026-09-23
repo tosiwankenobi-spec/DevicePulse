@@ -60,8 +60,8 @@ export default function AutoClean() {
         if (s.day_of_week != null) setDayOfWeek(s.day_of_week);
         setCategories(s.categories);
       }
-    } catch (e) {
-      console.log(e);
+    } catch (error) {
+      console.log(error);
     } finally {
       setLoading(false);
     }
@@ -88,7 +88,7 @@ export default function AutoClean() {
       const s = await api.saveAutoCleanSchedule(body);
       setSchedule(s);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    } catch (e) {
+    } catch {
       setErrMsg('Could not save your schedule. Please try again.');
     } finally {
       setSaving(false);
@@ -202,7 +202,7 @@ export default function AutoClean() {
           </View>
         ))}
       </View>
-      <Text style={styles.hint}>Large files are never touched automatically — you'll always review those yourself.</Text>
+      <Text style={styles.hint}>Large files are never touched automatically — you&apos;ll always review those yourself.</Text>
 
       {!!errMsg && <Text style={styles.errMsg} testID="autoclean-error">{errMsg}</Text>}
 

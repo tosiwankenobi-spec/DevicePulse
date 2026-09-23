@@ -6,7 +6,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { TrendChart } from '@/src/components/TrendChart';
 import { api } from '@/src/api';
-import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
 
 export default function Trends() {
@@ -17,7 +16,6 @@ export default function Trends() {
 
   useEffect(() => {
     (async () => {
-      const id = await getDeviceId();
       try { setData(await api.healthTrend()); } catch (e) { console.log(e); }
       finally { setLoading(false); }
     })();

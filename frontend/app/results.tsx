@@ -10,7 +10,6 @@ import { captureRef } from 'react-native-view-shot';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { HealthRing } from '@/src/components/HealthRing';
 import { api } from '@/src/api';
-import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
 
 const CATS = [
@@ -46,7 +45,6 @@ export default function Results() {
     setCleaning(true);
     try {
       const cats = CATS.filter(c => selected[c.key]).map(c => c.label);
-      const id = await getDeviceId();
       const res = await api.runClean({ categories: cats, reclaimable_mb: total });
       setCleanedResult(res);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -155,7 +153,6 @@ const SuccessView = ({ data, onDone }: { data: any; onDone: () => void }) => {
   React.useEffect(() => {
     (async () => {
       try {
-        const id = await getDeviceId();
         const r = await api.referral();
         setReferralCode(r.code);
       } catch (e) { console.log(e); }

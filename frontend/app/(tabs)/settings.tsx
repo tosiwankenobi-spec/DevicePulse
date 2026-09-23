@@ -36,7 +36,7 @@ export default function Settings() {
     try {
       const res = await api.testPush();
       setPushMsg(res?.sent ? 'Test notification sent!' : 'Push delivers on a real device after publishing a build.');
-    } catch (e) {
+    } catch {
       setPushMsg('Push delivers on a real device after publishing a build.');
     }
     setTimeout(() => setPushMsg(''), 4000);

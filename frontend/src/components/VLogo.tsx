@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, Platform } from 'react-native';
+import { View, Text, Platform } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
 interface Props {
@@ -27,6 +27,7 @@ export const VLogo: React.FC<Props> = ({ size = 120 }) => {
   }
 
   // Native (iOS / Android) — use Skia
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const NativeLogo = require('./VLogo.native').VLogo;
   return <NativeLogo size={size} />;
 };

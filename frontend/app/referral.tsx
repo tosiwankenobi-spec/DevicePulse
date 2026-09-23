@@ -7,7 +7,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 import { api } from '@/src/api';
-import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
 
 export default function Referral() {
@@ -15,11 +14,8 @@ export default function Referral() {
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
-  const [deviceId, setDeviceId] = useState('');
 
   const load = async () => {
-    const id = await getDeviceId();
-    setDeviceId(id);
     try { setStatus(await api.referral()); } catch (e) { console.log(e); }
     finally { setLoading(false); }
   };

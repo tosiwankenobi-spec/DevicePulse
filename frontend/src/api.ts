@@ -1,30 +1,73 @@
 import { getToken } from './authStorage';
 
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+const configuredBase = process.env.EXPO_PUBLIC_BACKEND_URL?.trim();
+const BASE = configuredBase?.replace(/\/+$/, '');
+
+export class ApiError extends Error {
+  status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+function requireBaseUrl(): string {
+  if (!BASE) {
+    throw new ApiError('DevicePulse is not connected to its service. Set EXPO_PUBLIC_BACKEND_URL.');
+  }
+  if (!/^https?:\/\//i.test(BASE)) {
+    throw new ApiError('EXPO_PUBLIC_BACKEND_URL must start with http:// or https://.');
+  }
+  return BASE;
+}
 
 // Public, human-viewable page for a shared Cleanup Report (GET /r/{code},
 // outside the /api prefix) — this is the link that goes in the share sheet.
-export const reportShareUrl = (shareCode: string) => `${BASE}/r/${shareCode}`;
+export const reportShareUrl = (shareCode: string) => `${requireBaseUrl()}/r/${encodeURIComponent(shareCode)}`;
 
 let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: () => void) { onUnauthorized = fn; }
 
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
+  const baseUrl = requireBaseUrl();
   const token = await getToken();
-  const res = await fetch(`${BASE}/api${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options?.headers || {}),
-    },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/api${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options?.headers || {}),
+      },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new ApiError('DevicePulse service timed out. Please try again.');
+    }
+    throw new ApiError('DevicePulse service is unavailable. Check your connection and try again.');
+  } finally {
+    clearTimeout(timeout);
+  }
   if (res.status === 401) {
     if (onUnauthorized) onUnauthorized();
-    throw new Error('unauthorized');
+    throw new ApiError('Your session expired. Please sign in again.', 401);
   }
-  if (!res.ok) throw new Error(`API ${res.status}`);
-  return res.json();
+  if (!res.ok) {
+    let detail = `Request failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch {}
+    throw new ApiError(detail, res.status);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
 }
 
 export const api = {
@@ -34,7 +77,7 @@ export const api = {
   me: () => req<any>('/auth/me'),
   logout: () => req<any>('/auth/logout', { method: 'POST' }),
   sessions: () => req<any[]>('/auth/sessions'),
-  revokeSession: (sid: string) => req<any>(`/auth/sessions/${sid}/revoke`, { method: 'POST' }),
+  revokeSession: (sid: string) => req<any>(`/auth/sessions/${encodeURIComponent(sid)}/revoke`, { method: 'POST' }),
   deleteAccount: () => req<any>('/auth/account', { method: 'DELETE' }),
   registerPush: (body: { user_id: string; platform: string; device_token: string }) =>
     req<any>('/register-push', { method: 'POST', body: JSON.stringify(body) }),
@@ -57,7 +100,7 @@ export const api = {
   boostMemory: () => req<any>('/device/memory/boost', { method: 'POST' }),
   security: () => req<any>('/device/security'),
   scanSecurity: () => req<any>('/device/security/scan', { method: 'POST' }),
-  resolveSecurityFinding: (id: string) => req<any>(`/device/security/findings/${id}/resolve`, { method: 'POST' }),
+  resolveSecurityFinding: (id: string) => req<any>(`/device/security/findings/${encodeURIComponent(id)}/resolve`, { method: 'POST' }),
   runScan: () => req<any>('/device/scan', { method: 'POST' }),
   runClean: (body: { categories: string[]; reclaimable_mb: number }) =>
     req<any>('/device/clean', { method: 'POST', body: JSON.stringify(body) }),
@@ -81,14 +124,14 @@ export const api = {
   pulseDaily: () => req<any>('/pulse/daily'),
   widgetSummary: () => req<any>('/widget/summary'),
   activeNudge: () => req<any>('/nudges/active'),
-  dismissNudge: (type: string) => req<any>(`/nudges/${type}/dismiss`, { method: 'POST' }),
+  dismissNudge: (type: string) => req<any>(`/nudges/${encodeURIComponent(type)}/dismiss`, { method: 'POST' }),
   familyGroup: () => req<any>('/family/group'),
   createFamily: () => req<any>('/family/create', { method: 'POST' }),
   joinFamily: (inviteCode: string) =>
     req<any>('/family/join', { method: 'POST', body: JSON.stringify({ invite_code: inviteCode }) }),
   leaveFamily: () => req<any>('/family/leave', { method: 'POST' }),
   familyRemoteClean: (memberUserId: string) =>
-    req<any>(`/family/remote-clean/${memberUserId}`, { method: 'POST' }),
+    req<any>(`/family/remote-clean/${encodeURIComponent(memberUserId)}`, { method: 'POST' }),
   reportMine: () => req<any>('/reports/mine'),
   generateReport: () => req<any>('/reports/generate', { method: 'POST' }),
 
@@ -111,5 +154,5 @@ export const api = {
     req<any>('/coach/chat', { method: 'POST', body: JSON.stringify(body) }),
   clearCoach: () => req<any>('/coach/history', { method: 'DELETE' }),
   coachInsights: () => req<any[]>('/coach/insights'),
-  ackCoachInsight: (key: string) => req<any>(`/coach/insights/${key}/ack`, { method: 'POST' }),
+  ackCoachInsight: (key: string) => req<any>(`/coach/insights/${encodeURIComponent(key)}/ack`, { method: 'POST' }),
 };

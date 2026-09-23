@@ -17,7 +17,7 @@ export default function SplashRoute() {
   useEffect(() => {
     scale.value = withTiming(1, { duration: 900, easing: Easing.out(Easing.cubic) });
     opacity.value = withTiming(1, { duration: 800 });
-  }, []);
+  }, [opacity, scale]);
 
   useEffect(() => {
     if (loading) return;
@@ -27,7 +27,7 @@ export default function SplashRoute() {
       if (user) router.replace('/(tabs)');
       else router.replace('/login');
     })();
-  }, [loading, user]);
+  }, [loading, router, user]);
 
   const logoStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }], opacity: opacity.value }));
 

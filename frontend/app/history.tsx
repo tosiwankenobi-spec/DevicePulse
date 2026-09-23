@@ -5,7 +5,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
-import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
 
 const CAT_ICON: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -32,7 +31,6 @@ export default function History() {
 
   useEffect(() => {
     (async () => {
-      const id = await getDeviceId();
       try {
         const [h, s] = await Promise.all([api.history(), api.historySummary()]);
         setItems(h);

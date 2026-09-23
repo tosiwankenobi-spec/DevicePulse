@@ -23,6 +23,7 @@ export const TrendChart: React.FC<Props> = ({ points, width, height = 180 }) => 
   if (Platform.OS === 'web') {
     return <WebChart points={points} width={width} height={height} />;
   }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const Native = require('./TrendChart.native').TrendChart;
   return <Native points={points} width={width} height={height} />;
 };

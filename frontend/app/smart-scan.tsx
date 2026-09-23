@@ -39,7 +39,7 @@ export default function SmartScan() {
       }
     }, 80);
     return () => clearInterval(iv);
-  }, []);
+  }, [rot]);
 
   const ringStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${rot.value}deg` }] }));
 

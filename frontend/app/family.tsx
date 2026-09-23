@@ -108,7 +108,7 @@ export default function Family() {
       setGroup(g);
       setJoinCode('');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    } catch (e: any) {
+    } catch {
       setJoinError("Couldn't join — check the invite code and try again.");
     } finally {
       setJoining(false);
@@ -287,8 +287,8 @@ function NoGroupView({
       <ScrollView contentContainerStyle={{ paddingHorizontal: theme.space.lg, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
         <LinearGradient colors={theme.gradients.brand} style={styles.hero} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
           <Ionicons name="people" size={36} color={theme.color.onBrand} />
-          <Text style={styles.heroTitle}>Manage your family's devices</Text>
-          <Text style={styles.heroSub}>See everyone's real storage, streak, and forecast — and clean up a member's device remotely, in one tap.</Text>
+          <Text style={styles.heroTitle}>Manage your family&apos;s devices</Text>
+          <Text style={styles.heroSub}>See everyone&apos;s real storage, streak, and forecast — and clean up a member&apos;s device remotely, in one tap.</Text>
         </LinearGradient>
 
         <Pressable style={styles.createBtn} onPress={onCreate} disabled={creating} testID="family-create">

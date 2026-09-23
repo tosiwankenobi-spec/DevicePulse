@@ -7,7 +7,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { api } from '@/src/api';
-import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
 
 export default function Junk() {
@@ -21,7 +20,6 @@ export default function Junk() {
 
   useEffect(() => {
     (async () => {
-      const id = await getDeviceId();
       try {
         const d = await api.cacheBreakdown();
         setData(d);
@@ -39,7 +37,6 @@ export default function Junk() {
   const doClear = async () => {
     setCleaning(true);
     try {
-      const id = await getDeviceId();
       await api.runClean({ categories: ['App cache'], reclaimable_mb: totalMb });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setConfirmOpen(false);

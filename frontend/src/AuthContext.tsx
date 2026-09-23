@@ -6,6 +6,7 @@ import { api, setUnauthorizedHandler } from './api';
 import { saveToken, getToken, clearToken } from './authStorage';
 import { registerForPush } from './push';
 import { rcEnabled } from './lib/revenuecat';
+import Purchases from 'react-native-purchases';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -84,7 +85,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!rcEnabled) return;
     (async () => {
       try {
-        const Purchases = require('react-native-purchases').default;
         if (user?.user_id && rcIdentityRef.current !== user.user_id) {
           await Purchases.logIn(user.user_id);
           rcIdentityRef.current = user.user_id;

@@ -13,9 +13,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
-
-from emergentintegrations.llm.chat import LlmChat, UserMessage
-
+from urllib.parse import quote
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -25,7 +23,13 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
-EMERGENT_AUTH_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").lower()
+REVENUECAT_SECRET_API_KEY = os.environ.get("REVENUECAT_SECRET_API_KEY")
+REVENUECAT_ENTITLEMENT_ID = os.environ.get("REVENUECAT_ENTITLEMENT_ID", "pro")
+EMERGENT_AUTH_URL = os.environ.get(
+    "EMERGENT_AUTH_URL",
+    "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+)
 
 # ---------- Emergent managed push ----------
 PUSH_BASE_URL = "https://integrations.emergentagent.com"
@@ -534,7 +538,18 @@ def _allow_ai_call(client_key: str) -> bool:
 # ==================== Routes ====================
 @api_router.get("/")
 async def root():
-    return {"app": "DevicePulse", "version": "1.0.0"}
+    return {"app": "DevicePulse", "version": "1.0.1"}
+
+
+@api_router.get("/healthz")
+async def healthz():
+    """Deployment readiness probe: verifies the API process and database."""
+    try:
+        await db.command("ping")
+    except Exception as exc:
+        logging.error("Database readiness check failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return {"status": "ok", "app": "DevicePulse", "version": "1.0.1"}
 
 # ---------- Auth ----------
 @api_router.post("/auth/session")
@@ -739,7 +754,7 @@ async def run_scan():
         health_before=68,
         health_after=min(97, 68 + int(total / 120)),
     )
-    await db.scans.insert_one(result.dict())
+    await db.scans.insert_one(result.model_dump())
     return result
 
 @api_router.post("/device/clean")
@@ -829,7 +844,7 @@ async def get_reminders(user=Depends(get_current_user)):
     doc = await db.reminders.find_one({"device_id": device_id})
     if not doc:
         prefs = ReminderPrefs(device_id=device_id)
-        await db.reminders.insert_one(prefs.dict())
+        await db.reminders.insert_one(prefs.model_dump())
         return prefs
     return ReminderPrefs(
         device_id=device_id,
@@ -842,7 +857,7 @@ async def get_reminders(user=Depends(get_current_user)):
 @api_router.put("/reminders", response_model=ReminderPrefs)
 async def update_reminders(prefs: ReminderPrefs, user=Depends(get_current_user)):
     device_id = user["user_id"]
-    data = prefs.dict()
+    data = prefs.model_dump()
     data["device_id"] = device_id
     await db.reminders.update_one({"device_id": device_id}, {"$set": data}, upsert=True)
     return ReminderPrefs(**data)
@@ -1175,7 +1190,7 @@ async def pulse_daily(user=Depends(get_current_user)):
         battery_pct=seed.battery_pct,
         security_ok=security_ok,
     )
-    doc = card.dict()
+    doc = card.model_dump()
     doc["user_id"] = user_id
     await db.pulse_daily.insert_one(doc.copy())
     return card
@@ -1664,16 +1679,9 @@ async def view_public_report_page(share_code: str):
 
 
 # ==================== Entitlements (Pro) ====================
-# This sandbox has no RevenueCat secret key or webhook receiver configured,
-# so the backend cannot independently verify a purchase against RevenueCat's
-# own servers. Given that limit (per explicit user choice — see project
-# notes), this stores a real, persisted, server-enforced `is_pro` flag on the
-# user record instead of trusting a value passed on each individual request:
-# the client (which holds a genuine RevenueCat subscription result) reports
-# it once via POST /entitlements/sync, and every Pro-gated endpoint below
-# checks this STORED flag. A production build would close the remaining gap
-# with a RevenueCat webhook that updates this same flag from RevenueCat's own
-# servers instead of the client self-reporting it.
+# Production verifies the authenticated RevenueCat app-user ID server-side.
+# Local/test environments may still use client sync so the app can be
+# developed without storing a RevenueCat secret on a workstation.
 
 @api_router.get("/entitlements/me")
 async def get_my_entitlement(user=Depends(get_current_user)):
@@ -1681,8 +1689,42 @@ async def get_my_entitlement(user=Depends(get_current_user)):
 
 @api_router.post("/entitlements/sync")
 async def sync_entitlement(body: EntitlementSync, user=Depends(get_current_user)):
-    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"is_pro": body.is_pro}})
-    return {"is_pro": body.is_pro}
+    is_pro = body.is_pro
+    if REVENUECAT_SECRET_API_KEY:
+        app_user_id = quote(user["user_id"], safe="")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as revenuecat:
+                response = await revenuecat.get(
+                    f"https://api.revenuecat.com/v1/subscribers/{app_user_id}",
+                    headers={
+                        "Authorization": f"Bearer {REVENUECAT_SECRET_API_KEY}",
+                        "Accept": "application/json",
+                    },
+                )
+            if response.status_code == 404:
+                is_pro = False
+            else:
+                response.raise_for_status()
+                entitlement = (
+                    response.json()
+                    .get("subscriber", {})
+                    .get("entitlements", {})
+                    .get(REVENUECAT_ENTITLEMENT_ID)
+                )
+                expires_at = entitlement.get("expires_date") if entitlement else None
+                is_pro = bool(entitlement) and (
+                    expires_at is None
+                    or datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                    > datetime.now(timezone.utc)
+                )
+        except (httpx.HTTPError, ValueError, TypeError):
+            logging.exception("RevenueCat entitlement verification failed")
+            raise HTTPException(502, "Subscription verification is temporarily unavailable")
+    elif ENVIRONMENT == "production":
+        raise HTTPException(503, "Subscription verification is not configured")
+
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"is_pro": is_pro}})
+    return {"is_pro": is_pro}
 
 
 # ==================== Auto-Clean Scheduling (Pro-only) ====================
@@ -2450,10 +2492,20 @@ async def boost_memory(user=Depends(get_current_user)):
     )
 
 
+def _fallback_recommendations(req: RecommendationRequest) -> List[Recommendation]:
+    """Useful deterministic guidance when the optional AI provider is offline."""
+    return [
+        Recommendation(title="Free up storage", description=f"Clean {req.junk_mb:.0f}MB of junk and cache files to speed up your device.", impact="high"),
+        Recommendation(title="Remove duplicate photos", description=f"You have {req.duplicates_mb:.0f}MB in duplicates—safe to remove after review.", impact="medium"),
+        Recommendation(title="Optimize battery", description="Restrict background activity for high-drain apps to extend battery life.", impact="medium"),
+        Recommendation(title="Review app permissions", description="Some apps have broader access than they need. A quick review improves privacy.", impact="low"),
+    ]
+
+
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     if not EMERGENT_LLM_KEY:
-        raise HTTPException(500, "LLM key not configured")
+        return _fallback_recommendations(req)
 
     # SEC-001: simple per-client rate limit on the paid LLM endpoint
     client_key = request.client.host if request.client else "unknown"
@@ -2484,6 +2536,8 @@ async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     )
 
     try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"rec-{uuid.uuid4()}",
@@ -2502,15 +2556,9 @@ async def get_ai_recommendations(req: RecommendationRequest, request: Request):
             data = json.loads(match.group(0))
             return [Recommendation(**r) for r in data[:4]]
         raise ValueError("No JSON array found")
-    except Exception as e:
+    except Exception:
         logging.exception("AI recommendation failed")
-        # graceful fallback
-        return [
-            Recommendation(title="Free up storage", description=f"Clean {req.junk_mb:.0f}MB of junk and cache files to speed up your device.", impact="high"),
-            Recommendation(title="Remove duplicate photos", description=f"You have {req.duplicates_mb:.0f}MB in duplicates—safe to remove after review.", impact="medium"),
-            Recommendation(title="Optimize battery", description="Restrict background activity for high-drain apps to extend battery life.", impact="medium"),
-            Recommendation(title="Review app permissions", description="Some apps have broader access than they need. A quick review improves privacy.", impact="low"),
-        ]
+        return _fallback_recommendations(req)
 
 
 # ==================== AI Health Coach ====================
@@ -2571,7 +2619,8 @@ async def coach_daily(user=Depends(get_current_user)):
     )
 
     if not EMERGENT_LLM_KEY:
-        doc = fallback.dict(); doc["user_id"] = user_id
+        doc = fallback.model_dump()
+        doc["user_id"] = user_id
         await db.coach_daily.insert_one(doc.copy())
         return fallback
 
@@ -2590,6 +2639,8 @@ async def coach_daily(user=Depends(get_current_user)):
     prompt = f"User's first name: {name}\nUser history:\n{memory}\n\nGenerate today's coaching card as JSON."
 
     try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"coach-daily-{uuid.uuid4()}",
@@ -2612,12 +2663,14 @@ async def coach_daily(user=Depends(get_current_user)):
             action_label=str(data.get("action_label") or fallback.action_label)[:24],
             action_route=data.get("action_route") if data.get("action_route") in allowed_routes else "/smart-scan",
         )
-        doc = card.dict(); doc["user_id"] = user_id
+        doc = card.model_dump()
+        doc["user_id"] = user_id
         await db.coach_daily.insert_one(doc.copy())
         return card
     except Exception:
         logging.exception("Coach daily generation failed")
-        doc = fallback.dict(); doc["user_id"] = user_id
+        doc = fallback.model_dump()
+        doc["user_id"] = user_id
         await db.coach_daily.insert_one(doc.copy())
         return fallback
 
@@ -2637,9 +2690,6 @@ async def coach_clear(user=Depends(get_current_user)):
 
 @api_router.post("/coach/chat", response_model=CoachMessage)
 async def coach_chat(req: CoachChatRequest, request: Request, user=Depends(get_current_user)):
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(500, "LLM key not configured")
-
     client_key = user["user_id"]
     if not _allow_ai_call(client_key):
         raise HTTPException(429, "Too many messages. Please wait a moment and try again.")
@@ -2681,17 +2731,22 @@ async def coach_chat(req: CoachChatRequest, request: Request, user=Depends(get_c
         f"RECENT CONVERSATION:\n{convo if convo else '(this is the first message)'}"
     )
 
-    try:
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"coach-{user_id}",
-            system_message=system_message,
-        ).with_model("anthropic", "claude-sonnet-5")
-        response = await chat.send_message(UserMessage(text=message))
-        reply = (response if isinstance(response, str) else str(response)).strip()
-    except Exception:
-        logging.exception("Coach chat failed")
-        reply = "I'm having trouble thinking right now. Try a Smart Scan in the meantime, and ask me again in a moment."
+    if not EMERGENT_LLM_KEY:
+        reply = "Start with a Smart Scan, then review the largest safe cleanup category first. I can still track your cleanup history while personalized AI coaching is temporarily unavailable."
+    else:
+        try:
+            from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"coach-{user_id}",
+                system_message=system_message,
+            ).with_model("anthropic", "claude-sonnet-5")
+            response = await chat.send_message(UserMessage(text=message))
+            reply = (response if isinstance(response, str) else str(response)).strip()
+        except Exception:
+            logging.exception("Coach chat failed")
+            reply = "I'm having trouble thinking right now. Try a Smart Scan in the meantime, and ask me again in a moment."
 
     reply = reply[:1500]
     reply_at = datetime.now(timezone.utc).isoformat()
@@ -2827,10 +2882,16 @@ async def ack_coach_insight(key: str, user=Depends(get_current_user)):
 
 app.include_router(api_router)
 
+_configured_origins = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ORIGINS", "*").split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=False,
-    allow_origins=["*"],
+    allow_origins=_configured_origins or ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -10,7 +10,6 @@ import { HealthRing } from '@/src/components/HealthRing';
 import { GlassCard } from '@/src/components/GlassCard';
 import { VLogo } from '@/src/components/VLogo';
 import { api } from '@/src/api';
-import { getDeviceId } from '@/src/device';
 import { useAuth } from '@/src/AuthContext';
 import { theme } from '@/src/theme';
 
@@ -52,6 +51,7 @@ export default function Home() {
   const router = useRouter();
   const { user, justLoggedIn, clearJustLoggedIn } = useAuth();
   const [health, setHealth] = useState<Health | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [recs, setRecs] = useState<Rec[] | null>(null);
   const [loadingRecs, setLoadingRecs] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -63,12 +63,15 @@ export default function Home() {
   const [fixingNudge, setFixingNudge] = useState(false);
 
   const load = async () => {
+    setLoadError(null);
     try {
       const h = await api.health();
       setHealth(h);
-    } catch (e) { console.log(e); }
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : 'Unable to load DevicePulse.');
+      return;
+    }
     try {
-      const id = await getDeviceId();
       const [s, f, p, n] = await Promise.all([api.streak(), api.forecast(), api.pulseDaily(), api.activeNudge()]);
       setStreak(s.current_streak_weeks);
       setForecastDays(f.days_until_full);
@@ -137,16 +140,21 @@ export default function Home() {
       const t = setTimeout(() => clearJustLoggedIn(), 5000);
       return () => clearTimeout(t);
     }
-  }, [justLoggedIn]);
+  }, [clearJustLoggedIn, justLoggedIn]);
   useFocusEffect(React.useCallback(() => {
-    getDeviceId().then((id) => Promise.all([api.streak(), api.forecast(), api.pulseDaily(), api.activeNudge()]).then(([s, f, p, n]) => {
+    Promise.all([api.streak(), api.forecast(), api.pulseDaily(), api.activeNudge()]).then(([s, f, p, n]) => {
       setStreak(s.current_streak_weeks);
       setForecastDays(f.days_until_full);
       setPulse(p);
       setNudge(n);
-    }).catch(() => {}));
+    }).catch(() => {});
   }, []));
-  useEffect(() => { if (health && !recs) loadRecs(health); }, [health]);
+  useEffect(() => {
+    if (health && !recs) loadRecs(health);
+    // Loading is intentionally keyed to the health snapshot; including recs
+    // would retrigger after the response and make the effect harder to reason about.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [health]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -163,7 +171,18 @@ export default function Home() {
   if (!health) {
     return (
       <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
-        <ActivityIndicator color={theme.color.brand} />
+        {loadError ? (
+          <View style={styles.errorState}>
+            <Ionicons name="cloud-offline-outline" size={42} color={theme.color.warning} />
+            <Text style={styles.errorTitle}>Can&apos;t reach DevicePulse</Text>
+            <Text style={styles.errorBody}>{loadError}</Text>
+            <Pressable style={styles.retryButton} onPress={load} testID="home-retry-button">
+              <Text style={styles.retryButtonText}>Try again</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <ActivityIndicator color={theme.color.brand} />
+        )}
       </View>
     );
   }
@@ -422,4 +441,9 @@ const styles = StyleSheet.create({
   welcomeIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(16,185,129,0.18)', alignItems: 'center', justifyContent: 'center' },
   welcomeTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
   welcomeBody: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
+  errorState: { alignItems: 'center', paddingHorizontal: theme.space.xl, maxWidth: 420 },
+  errorTitle: { color: theme.color.onSurface, fontSize: 18, fontWeight: '700', marginTop: theme.space.md },
+  errorBody: { color: theme.color.onSurface2, fontSize: 13, lineHeight: 19, marginTop: theme.space.sm, textAlign: 'center' },
+  retryButton: { backgroundColor: theme.color.brand, borderRadius: theme.radius.pill, marginTop: theme.space.lg, paddingHorizontal: 24, paddingVertical: 12 },
+  retryButtonText: { color: theme.color.onBrand, fontSize: 14, fontWeight: '700' },
 });

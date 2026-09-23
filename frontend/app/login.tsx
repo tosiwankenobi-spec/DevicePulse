@@ -22,7 +22,7 @@ export default function Login() {
 
   useEffect(() => {
     if (user) router.replace('/(tabs)');
-  }, [user]);
+  }, [router, user]);
 
   const onLogin = async () => {
     setSigningIn(true);

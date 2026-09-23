@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import { api } from './api';
 
 // Registers this device's native push token with the backend, bound to the user.
@@ -6,7 +7,6 @@ import { api } from './api';
 export async function registerForPush(userId: string): Promise<void> {
   if (Platform.OS === 'web') return;
   try {
-    const Notifications = require('expo-notifications');
     const { status } = await Notifications.requestPermissionsAsync();
     if (status !== 'granted') return;
     const tokenResp = await Notifications.getDevicePushTokenAsync();

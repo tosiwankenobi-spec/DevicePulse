@@ -19,7 +19,7 @@ export const HealthRing: React.FC<Props> = ({ score, size = 240, label = 'Health
       duration: 1400,
       easing: Easing.out(Easing.cubic),
     });
-  }, [score]);
+  }, [progress, score]);
 
   const stroke = size * 0.09;
   const radius = (size - stroke) / 2;

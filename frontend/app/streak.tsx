@@ -7,9 +7,8 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
 import { captureRef } from 'react-native-view-shot';
-import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { api } from '@/src/api';
-import { getDeviceId } from '@/src/device';
 import { theme } from '@/src/theme';
 
 const DAYS = ['W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W7', 'Now'];
@@ -24,7 +23,6 @@ export default function Streak() {
   const badgeRef = React.useRef<View>(null);
 
   const load = async () => {
-    const id = await getDeviceId();
     try { setData(await api.streak()); } catch (e) { console.log(e); }
     finally { setLoading(false); }
   };
@@ -35,12 +33,11 @@ export default function Streak() {
     setFreezing(true);
     setFreezeMsg('');
     try {
-      const id = await getDeviceId();
       await api.useFreeze();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setFreezeMsg('❄️ Streak protected! Your last missed week is now covered.');
       await load();
-    } catch (e: any) {
+    } catch {
       setFreezeMsg('Freeze unavailable — you may have used it this month.');
     } finally {
       setFreezing(false);
@@ -58,7 +55,7 @@ export default function Streak() {
         const uri = await captureRef(badgeRef, { format: 'png', quality: 0.95 });
         if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri, { dialogTitle: 'Share your badge' });
         else await Share.share({ message: msg });
-      } catch (e) {
+      } catch {
         try { await Share.share({ message: msg }); } catch {}
       } finally {
         setShareBadge(null);
