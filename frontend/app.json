@@ -20,7 +20,7 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "ca.verolane.devicepulse",
-      "versionCode": 4
+      "versionCode": 5
     },
     "web": {
       "bundler": "metro",
@@ -47,6 +47,13 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3bf247fe-0122-4da7-86af-3cce27bfaca6"
+      }
+    },
+    "owner": "verolane"
   }
 }
