@@ -35,7 +35,7 @@ export default function Guest() {
         <ScrollView contentContainerStyle={{ paddingBottom: 120 }} showsVerticalScrollIndicator={false}>
           <View style={styles.hero}>
             <HealthRing score={device.health_before} />
-            <Text style={styles.demoNote}>Live storage reading from this device</Text>
+            <Text style={styles.demoNote}>Live app-accessible storage reading</Text>
           </View>
 
           <View style={styles.grid}>

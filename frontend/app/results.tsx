@@ -70,9 +70,9 @@ export default function Results() {
 
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.totalCard}>
-            <Text style={styles.totalLabel}>Device storage used</Text>
+            <Text style={styles.totalLabel}>App-accessible storage used</Text>
             <Text style={styles.totalValue}>{formatMb(data.storage_used_mb)}</Text>
-            <Text style={styles.totalSub}>{formatMb(data.storage_free_mb)} free of {formatMb(data.storage_total_mb)}</Text>
+            <Text style={styles.totalSub}>{formatMb(data.storage_free_mb)} available to apps of {formatMb(data.storage_total_mb)}</Text>
           </View>
 
           <Text style={styles.section}>Safe cleanup available</Text>

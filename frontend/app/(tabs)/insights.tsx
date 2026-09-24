@@ -89,10 +89,10 @@ function StorageView({ data }: { data: LocalDeviceScan }) {
   return (
     <View>
       <View style={styles.card}>
-        <Text style={styles.cardLabel}>Storage used</Text>
+        <Text style={styles.cardLabel}>App-accessible storage used</Text>
         <Text style={styles.cardValue}>{usedPct}%</Text>
         <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${usedPct}%` }]} /></View>
-        <Text style={styles.helperText}>{formatMb(data.storage_free_mb)} free of {formatMb(data.storage_total_mb)}</Text>
+        <Text style={styles.helperText}>{formatMb(data.storage_free_mb)} available to apps of {formatMb(data.storage_total_mb)}. Android may show a larger physical total that includes reserved system capacity.</Text>
       </View>
       <View style={styles.card}>
         <Text style={styles.cardLabel}>DevicePulse temporary cache</Text>

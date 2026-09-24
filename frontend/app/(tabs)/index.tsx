@@ -96,7 +96,7 @@ export default function Home() {
               <View style={styles.pulseIconWrap}><Ionicons name="server-outline" size={22} color={theme.color.brand} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.pulseTitle}>Live Storage Check</Text>
-                <Text style={styles.pulseHeadline}>{formatMb(device.storage_free_mb)} free on this device</Text>
+                <Text style={styles.pulseHeadline}>{formatMb(device.storage_free_mb)} available to apps</Text>
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 <Text style={styles.pulseScore}>{score}</Text>
@@ -119,7 +119,7 @@ export default function Home() {
           <GlassCard style={styles.hero} testID="home-hero-card">
             <View style={{ alignItems: 'center' }}>
               <HealthRing score={score} testID="home-health-ring" />
-              <Text style={styles.heroSubtitle}>Score based on real free storage</Text>
+              <Text style={styles.heroSubtitle}>Score based on app-accessible free storage</Text>
               <Pressable style={styles.scanBtn} onPress={onSmartScan} testID="smart-scan-button">
                 <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
                 <Ionicons name="scan" size={20} color={theme.color.onBrand} />
