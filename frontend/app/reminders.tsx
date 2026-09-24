@@ -10,9 +10,9 @@ import { theme } from '@/src/theme';
 
 const OPTIONS = [
   { key: 'low_storage', icon: 'server-outline', title: 'Low storage alert', desc: 'Nudge me when free space drops below 15%.' },
-  { key: 'weekly_cleanup', icon: 'calendar-outline', title: 'Weekly cleanup', desc: 'A gentle reminder to run a Smart Scan every week.' },
-  { key: 'after_downloads', icon: 'cloud-download-outline', title: 'After big downloads', desc: 'Suggest a cleanup after large files pile up.' },
-  { key: 'battery_alerts', icon: 'battery-charging-outline', title: 'Battery insights', desc: 'Let me know when a high-drain app appears.' },
+  { key: 'weekly_cleanup', icon: 'calendar-outline', title: 'Weekly storage check', desc: 'A gentle reminder to review real free space every week.' },
+  { key: 'after_downloads', icon: 'cloud-download-outline', title: 'Review downloads', desc: 'Remind me to use Android Storage after large downloads.' },
+  { key: 'battery_alerts', icon: 'battery-charging-outline', title: 'Battery reminder', desc: 'Remind me to review Android Battery settings.' },
 ] as const;
 
 export default function Reminders() {
@@ -61,7 +61,7 @@ export default function Reminders() {
           <ScrollView contentContainerStyle={{ paddingHorizontal: theme.space.lg, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
             <View style={styles.hero}>
               <Ionicons name="notifications" size={30} color={theme.color.brand} />
-              <Text style={styles.heroText}>Stay ahead of clutter. DevicePulse will quietly nudge you at the right moments.</Text>
+              <Text style={styles.heroText}>Stay aware of storage and battery status with clear, user-controlled reminders.</Text>
             </View>
 
             {OPTIONS.map((o) => (

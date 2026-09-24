@@ -7,10 +7,10 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, FadeIn } from 'react-native-reanimated';
 import { HealthRing } from '@/src/components/HealthRing';
-import { api } from '@/src/api';
+import { scanLocalDevice } from '@/src/deviceStorage';
 import { theme } from '@/src/theme';
 
-const STEPS = ['Scanning junk files', 'Finding duplicates', 'Analyzing large files', 'Checking cache', 'Optimizing performance'];
+const STEPS = ['Reading device storage', 'Measuring free space', 'Checking DevicePulse cache', 'Calculating storage health'];
 
 export default function SmartScan() {
   const router = useRouter();
@@ -31,11 +31,14 @@ export default function SmartScan() {
       setStepIdx(Math.min(STEPS.length - 1, Math.floor((p / 100) * STEPS.length)));
       if (p >= 100) {
         clearInterval(iv);
-        api.runScan().then((r) => {
-          setResult(r);
+        try {
+          const localResult = scanLocalDevice();
+          setResult(localResult);
           setDone(true);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        }).catch(() => setDone(true));
+        } catch {
+          setDone(true);
+        }
       }
     }, 80);
     return () => clearInterval(iv);
@@ -79,14 +82,14 @@ export default function SmartScan() {
           )}
           {done && result && (
             <Animated.View entering={FadeIn.duration(400)} style={styles.foundBox}>
-              <Text style={styles.foundLabel}>Reclaimable</Text>
-              <Text style={styles.foundValue}>{(result.total_reclaimable_mb / 1024).toFixed(2)} GB</Text>
+              <Text style={styles.foundLabel}>Available storage</Text>
+              <Text style={styles.foundValue}>{(result.storage_free_mb / 1024).toFixed(1)} GB</Text>
             </Animated.View>
           )}
           {done && (
             <Pressable style={styles.cta} onPress={onSeeResults} testID="review-clean-button">
               <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
-              <Text style={styles.ctaText}>Review & Clean</Text>
+              <Text style={styles.ctaText}>Review storage</Text>
               <Ionicons name="arrow-forward" size={18} color={theme.color.onBrand} />
             </Pressable>
           )}

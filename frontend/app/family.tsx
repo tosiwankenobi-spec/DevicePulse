@@ -25,10 +25,10 @@ type Member = {
   name: string;
   is_owner: boolean;
   joined_at: string;
-  score: number;
-  status: string;
-  streak_weeks: number;
-  days_until_full: number;
+  score?: number;
+  status?: string;
+  streak_weeks?: number;
+  days_until_full?: number;
 };
 
 type Group = {
@@ -36,12 +36,6 @@ type Group = {
   invite_code: string;
   is_owner: boolean;
   members: Member[];
-};
-
-const statusColor = (status: string) => {
-  if (status === 'Excellent' || status === 'Good') return theme.color.brand;
-  if (status === 'Needs Attention') return theme.color.warning;
-  return theme.color.error;
 };
 
 export default function Family() {
@@ -53,8 +47,6 @@ export default function Family() {
   const [leaving, setLeaving] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [joinError, setJoinError] = useState<string | null>(null);
-  const [cleaningId, setCleaningId] = useState<string | null>(null);
-  const [justCleanedId, setJustCleanedId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
@@ -128,28 +120,6 @@ export default function Family() {
     setTimeout(() => setCopied(false), 1500);
   };
 
-  const onRemoteClean = async (memberId: string) => {
-    if (cleaningId) return;
-    setCleaningId(memberId);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    try {
-      const result = await api.familyRemoteClean(memberId);
-      setGroup((cur) => {
-        if (!cur) return cur;
-        return {
-          ...cur,
-          members: cur.members.map((m) => (m.user_id === memberId && result.member ? result.member : m)),
-        };
-      });
-      setJustCleanedId(memberId);
-      setTimeout(() => setJustCleanedId(null), 2500);
-    } catch (e) {
-      console.log(e);
-    } finally {
-      setCleaningId(null);
-    }
-  };
-
   return (
     <View style={styles.container} testID="family-screen">
       <LinearGradient colors={['#050F14', '#0B1B24']} style={StyleSheet.absoluteFill} />
@@ -182,7 +152,7 @@ export default function Family() {
               <LinearGradient colors={theme.gradients.brand} style={styles.hero} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
                 <Ionicons name="people" size={32} color={theme.color.onBrand} />
                 <Text style={styles.heroTitle}>{group.members.length} of 5 devices linked</Text>
-                <Text style={styles.heroSub}>Real accounts, real live data — not just names on a list.</Text>
+                <Text style={styles.heroSub}>Securely link family accounts without remote access to anyone&apos;s personal files.</Text>
                 <View style={styles.codeRow}>
                   <Text style={styles.codeText} testID="family-invite-code">{group.invite_code}</Text>
                   <Pressable style={styles.codeBtn} onPress={() => onCopyCode(group.invite_code)} testID="family-copy-code" hitSlop={8}>
@@ -204,47 +174,11 @@ export default function Family() {
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.memberName}>{m.name}</Text>
-                      <View style={styles.statRow}>
-                        <View style={[styles.statusDot, { backgroundColor: statusColor(m.status) }]} />
-                        <Text style={styles.memberMeta}>{m.status} · {m.score}/100</Text>
-                      </View>
+                      <Text style={styles.memberMeta}>Linked family account</Text>
                     </View>
                     {m.is_owner && <View style={styles.ownerBadge}><Text style={styles.ownerBadgeText}>OWNER</Text></View>}
                   </View>
 
-                  <View style={styles.metricsRow}>
-                    <View style={styles.metric}>
-                      <Ionicons name="flame" size={14} color={theme.color.warning} />
-                      <Text style={styles.metricText}>{m.streak_weeks}wk streak</Text>
-                    </View>
-                    <View style={styles.metric}>
-                      <Ionicons name="trending-up" size={14} color={theme.color.info} />
-                      <Text style={styles.metricText}>{m.days_until_full}d until full</Text>
-                    </View>
-                  </View>
-
-                  {group.is_owner && !m.is_owner && (
-                    <Pressable
-                      style={[styles.remoteBtn, cleaningId === m.user_id && styles.remoteBtnDisabled]}
-                      onPress={() => onRemoteClean(m.user_id)}
-                      disabled={cleaningId === m.user_id}
-                      testID={`remote-clean-${m.user_id}`}
-                    >
-                      {cleaningId === m.user_id ? (
-                        <ActivityIndicator size="small" color={theme.color.brand} />
-                      ) : justCleanedId === m.user_id ? (
-                        <>
-                          <Ionicons name="checkmark-circle" size={16} color={theme.color.brand} />
-                          <Text style={styles.remoteBtnText}>Cleaned remotely</Text>
-                        </>
-                      ) : (
-                        <>
-                          <Ionicons name="cloud-download-outline" size={16} color={theme.color.brand} />
-                          <Text style={styles.remoteBtnText}>Clean their device remotely</Text>
-                        </>
-                      )}
-                    </Pressable>
-                  )}
                 </View>
               ))}
 

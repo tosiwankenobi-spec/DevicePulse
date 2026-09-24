@@ -1,34 +1,23 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
+import React from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { HealthRing } from '@/src/components/HealthRing';
-import { api } from '@/src/api';
+import { scanLocalDevice } from '@/src/deviceStorage';
 import { theme } from '@/src/theme';
 
-// Guest preview — uses only public/simulated endpoints (no auth required)
 export default function Guest() {
   const router = useRouter();
-  const [health, setHealth] = useState<any>(null);
-
-  useEffect(() => { api.health().then(setHealth).catch(() => {}); }, []);
-
-  if (!health) {
-    return (
-      <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
-        <ActivityIndicator color={theme.color.brand} />
-      </View>
-    );
-  }
-
-  const storagePct = Math.round((health.storage_used_gb / health.storage_total_gb) * 100);
+  const device = scanLocalDevice();
+  const storagePct = device.storage_total_mb > 0 ? Math.round((device.storage_used_mb / device.storage_total_mb) * 100) : 0;
+  const freeGb = (device.storage_free_mb / 1024).toFixed(1);
   const stats = [
     { label: 'Storage', value: `${storagePct}%`, icon: 'server-outline', color: theme.color.info },
-    { label: 'Memory', value: `${health.ram_used_pct}%`, icon: 'hardware-chip-outline', color: '#8B5CF6' },
-    { label: 'Battery', value: `${health.battery_pct}%`, icon: 'battery-half-outline', color: theme.color.warning },
-    { label: 'Security', value: 'Safe', icon: 'shield-checkmark-outline', color: theme.color.brand },
+    { label: 'Free space', value: `${freeGb} GB`, icon: 'folder-open-outline', color: '#8B5CF6' },
+    { label: 'App cache', value: `${device.cache_mb.toFixed(1)} MB`, icon: 'flash-outline', color: theme.color.warning },
+    { label: 'Security', value: 'Review', icon: 'shield-checkmark-outline', color: theme.color.brand },
   ] as const;
 
   return (
@@ -45,8 +34,8 @@ export default function Guest() {
 
         <ScrollView contentContainerStyle={{ paddingBottom: 120 }} showsVerticalScrollIndicator={false}>
           <View style={styles.hero}>
-            <HealthRing score={health.score} />
-            <Text style={styles.demoNote}>Sample device — sign in to scan your own</Text>
+            <HealthRing score={device.health_before} />
+            <Text style={styles.demoNote}>Live storage reading from this device</Text>
           </View>
 
           <View style={styles.grid}>
@@ -64,7 +53,7 @@ export default function Guest() {
           <View style={styles.lockCard}>
             <Ionicons name="lock-closed" size={22} color={theme.color.brand} />
             <Text style={styles.lockTitle}>Unlock the full experience</Text>
-            <Text style={styles.lockBody}>Smart Scan, duplicate & junk cleanup, AI tips, streaks and trends — all saved to your account.</Text>
+            <Text style={styles.lockBody}>Sign in to save verified cleanup history, reminders, family tools and coaching across devices.</Text>
           </View>
         </ScrollView>
 

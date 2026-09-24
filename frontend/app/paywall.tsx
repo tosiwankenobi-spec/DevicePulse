@@ -9,12 +9,12 @@ import { useSubscription } from '@/src/lib/revenuecat';
 import { theme } from '@/src/theme';
 
 const FEATURES = [
-  { icon: 'scan', label: 'Auto Smart Scan' },
-  { icon: 'infinite', label: 'Unlimited duplicate cleanup' },
-  { icon: 'shield-checkmark', label: 'Advanced security scan' },
-  { icon: 'battery-charging', label: 'Battery optimizer' },
-  { icon: 'time', label: 'Scheduled cleanups' },
-  { icon: 'headset', label: 'Priority support' },
+  { icon: 'chatbubbles', label: 'Full AI Coach conversations' },
+  { icon: 'people', label: 'Family device dashboard' },
+  { icon: 'time', label: 'Extended history and reports' },
+  { icon: 'notifications', label: 'Advanced reminder controls' },
+  { icon: 'sync', label: 'Cross-device account sync' },
+  { icon: 'shield-checkmark', label: 'Privacy-first guidance' },
 ] as const;
 
 export default function Paywall() {
@@ -76,8 +76,8 @@ export default function Paywall() {
               <Ionicons name="sparkles" size={12} color={theme.color.onBrand} />
               <Text style={styles.proBadgeText}>DEVICEPULSE PRO</Text>
             </View>
-            <Text style={styles.heroTitle}>Deeper cleanup.{'\n'}Faster device.</Text>
-            <Text style={styles.heroSub}>Unlock the tools that keep your device running like new.</Text>
+            <Text style={styles.heroTitle}>More guidance.{ '\n' }More continuity.</Text>
+            <Text style={styles.heroSub}>Unlock coaching, family tools and extended progress history.</Text>
           </View>
         </View>
 
@@ -144,7 +144,7 @@ export default function Paywall() {
               <Pressable style={styles.restoreBtn} onPress={onRestore} disabled={isRestoring} testID="paywall-restore">
                 <Text style={styles.restoreText}>{isRestoring ? 'Restoring…' : 'Restore purchases'}</Text>
               </Pressable>
-              <Text style={styles.disclaimer}>Simulated in preview/Expo Go via the RevenueCat Test Store. Cancel anytime.</Text>
+              <Text style={styles.disclaimer}>Subscriptions are processed by Google Play. Cancel anytime in Play Store settings.</Text>
             </>
           )}
         </ScrollView>
@@ -155,8 +155,8 @@ export default function Paywall() {
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Confirm subscription</Text>
             <Text style={styles.modalBody}>{selectedTrial
-              ? `Start your ${selectedTrial}, then ${pkg?.product.priceString}. Cancel anytime before it ends. (Simulated in preview.)`
-              : `Subscribe to DevicePulse Pro for ${pkg?.product.priceString}? (Simulated in preview.)`}</Text>
+              ? `Start your ${selectedTrial}, then ${pkg?.product.priceString}. Cancel anytime before it ends.`
+              : `Subscribe to DevicePulse Pro for ${pkg?.product.priceString}?`}</Text>
             <View style={styles.modalButtons}>
               <Pressable style={[styles.modalBtn, styles.modalGhost]} onPress={() => setConfirmOpen(false)} testID="confirm-cancel">
                 <Text style={styles.modalGhostText}>Cancel</Text>

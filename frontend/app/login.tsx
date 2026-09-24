@@ -85,5 +85,5 @@ const styles = StyleSheet.create({
   googleBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, height: 56, borderRadius: theme.radius.pill, backgroundColor: '#FFFFFF' },
   googleText: { color: '#1F1F1F', fontSize: 16, fontWeight: '700' },
   legal: { color: theme.color.onSurface3, fontSize: 11, textAlign: 'center', lineHeight: 15 },
-  guestLink: { color: theme.color.brand, fontSize: 14, fontWeight: '700', textAlign: 'center', marginTop: 6 },
+  guestLink: { color: '#ECFDF5', fontSize: 14, fontWeight: '700', textAlign: 'center', marginTop: 6 },
 });

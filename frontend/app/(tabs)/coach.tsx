@@ -15,38 +15,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import Animated, { FadeInUp } from 'react-native-reanimated';
-import { GlassCard } from '@/src/components/GlassCard';
 import { api } from '@/src/api';
+import { scanLocalDevice } from '@/src/deviceStorage';
 import { theme } from '@/src/theme';
 import { useSubscription } from '@/src/lib/revenuecat';
 
 type Msg = { role: 'user' | 'assistant'; content: string; created_at: string };
-type Daily = {
-  greeting: string;
-  tip_title: string;
-  tip_body: string;
-  focus: string;
-  action_label: string;
-  action_route: string;
-};
-type Insight = {
-  key: string;
-  kind: 'win' | 'pattern';
-  title: string;
-  body: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  action_label?: string;
-  action_route?: string;
-};
-
-const focusIcon: Record<string, keyof typeof Ionicons.glyphMap> = {
-  storage: 'server-outline',
-  battery: 'battery-charging-outline',
-  security: 'shield-checkmark-outline',
-  photos: 'images-outline',
-  general: 'sparkles-outline',
-};
 
 export default function Coach() {
   const router = useRouter();
@@ -58,9 +32,6 @@ export default function Coach() {
   // paywall bypassed for every real visitor on a live web deployment.
   const chatUnlocked = isSubscribed || (__DEV__ && Platform.OS === 'web');
 
-  const [daily, setDaily] = useState<Daily | null>(null);
-  const [insights, setInsights] = useState<Insight[]>([]);
-  const [ackingKey, setAckingKey] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -70,36 +41,20 @@ export default function Coach() {
 
   const load = useCallback(async () => {
     try {
-      const [d, h, hist, ins] = await Promise.all([
-        api.coachDaily().catch(() => null),
-        api.health().catch(() => null),
-        api.coachHistory().catch(() => []),
-        api.coachInsights().catch(() => []),
-      ]);
-      if (d) setDaily(d);
-      if (h) setHealth(h);
+      const hist = await api.coachHistory().catch(() => []);
+      const local = scanLocalDevice();
+      setHealth({
+        score: local.health_before,
+        storage_used_gb: local.storage_used_mb / 1024,
+        storage_total_gb: local.storage_total_mb / 1024,
+      });
       setMessages(hist || []);
-      setInsights(ins || []);
     } catch (e) {
       console.log(e);
     } finally {
       setLoading(false);
     }
   }, []);
-
-  const onAckInsight = async (key: string) => {
-    if (ackingKey) return;
-    setAckingKey(key);
-    setInsights((cur) => cur.filter((i) => i.key !== key)); // optimistic
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    try {
-      await api.ackCoachInsight(key);
-    } catch (e) {
-      console.log(e);
-    } finally {
-      setAckingKey(null);
-    }
-  };
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -122,7 +77,6 @@ export default function Coach() {
         message: text,
         health_score: health?.score,
         storage_used_pct: health ? (health.storage_used_gb / health.storage_total_gb) * 100 : undefined,
-        battery_health_pct: health?.battery_health_pct,
       });
       setMessages((m) => [...m, reply]);
     } catch (e) {
@@ -152,8 +106,8 @@ export default function Coach() {
             <Ionicons name="sparkles" size={20} color={theme.color.brand} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.headerTitle}>AI Health Coach</Text>
-            <Text style={styles.headerSub}>Learns your habits, celebrates your wins</Text>
+            <Text style={styles.headerTitle}>AI Device Guide</Text>
+            <Text style={styles.headerSub}>General guidance using verified storage context</Text>
           </View>
           {messages.length > 0 && (
             <Pressable
@@ -182,77 +136,6 @@ export default function Coach() {
               <ActivityIndicator color={theme.color.brand} style={{ marginTop: 40 }} />
             ) : (
               <>
-                {insights.filter((i) => i.kind === 'win').map((i) => (
-                  <Animated.View key={i.key} entering={FadeInUp.duration(300)}>
-                    <GlassCard style={styles.winCardOuter} testID={`coach-insight-${i.key}`}>
-                      <View style={styles.winCard}>
-                        <View style={styles.winIcon}>
-                          <Ionicons name={i.icon} size={18} color={theme.color.warning} />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.winTitle}>{i.title}</Text>
-                          <Text style={styles.winBody}>{i.body}</Text>
-                        </View>
-                        <Pressable
-                          style={styles.winAck}
-                          testID={`coach-insight-ack-${i.key}`}
-                          onPress={() => onAckInsight(i.key)}
-                        >
-                          <Text style={styles.winAckText}>Nice!</Text>
-                        </Pressable>
-                      </View>
-                    </GlassCard>
-                  </Animated.View>
-                ))}
-
-                {insights.filter((i) => i.kind === 'pattern').map((i) => (
-                  <Animated.View key={i.key} entering={FadeInUp.duration(300)}>
-                    <GlassCard style={styles.patternCard} testID={`coach-insight-${i.key}`}>
-                      <View style={styles.dailyTop}>
-                        <View style={[styles.dailyBadge, { backgroundColor: theme.color.info }]}>
-                          <Ionicons name={i.icon} size={16} color={theme.color.onBrand} />
-                        </View>
-                        <Text style={styles.dailyGreeting}>Learned from your habits</Text>
-                      </View>
-                      <Text style={styles.dailyTitle}>{i.title}</Text>
-                      <Text style={styles.dailyBody}>{i.body}</Text>
-                      {i.action_label && i.action_route && (
-                        <Pressable
-                          style={styles.dailyAction}
-                          testID={`coach-insight-action-${i.key}`}
-                          onPress={() => { Haptics.selectionAsync().catch(() => {}); router.push(i.action_route as any); }}
-                        >
-                          <Text style={styles.dailyActionText}>{i.action_label}</Text>
-                          <Ionicons name="arrow-forward" size={16} color={theme.color.onBrand} />
-                        </Pressable>
-                      )}
-                    </GlassCard>
-                  </Animated.View>
-                ))}
-
-                {daily && (
-                  <Animated.View entering={FadeInUp.duration(400)}>
-                    <GlassCard style={styles.dailyCard} testID="coach-daily-card">
-                      <View style={styles.dailyTop}>
-                        <View style={styles.dailyBadge}>
-                          <Ionicons name={focusIcon[daily.focus] || 'sparkles-outline'} size={16} color={theme.color.onBrand} />
-                        </View>
-                        <Text style={styles.dailyGreeting}>{daily.greeting}</Text>
-                      </View>
-                      <Text style={styles.dailyTitle}>{daily.tip_title}</Text>
-                      <Text style={styles.dailyBody}>{daily.tip_body}</Text>
-                      <Pressable
-                        style={styles.dailyAction}
-                        testID="coach-daily-action"
-                        onPress={() => { Haptics.selectionAsync().catch(() => {}); router.push(daily.action_route as any); }}
-                      >
-                        <Text style={styles.dailyActionText}>{daily.action_label}</Text>
-                        <Ionicons name="arrow-forward" size={16} color={theme.color.onBrand} />
-                      </Pressable>
-                    </GlassCard>
-                  </Animated.View>
-                )}
-
                 {messages.length === 0 && (
                   <View style={styles.emptyWrap}>
                     <Text style={styles.emptyTitle}>Ask me anything about your device</Text>

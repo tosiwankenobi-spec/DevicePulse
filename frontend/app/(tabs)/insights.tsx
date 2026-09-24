@@ -1,163 +1,80 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
-import { useRouter } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
-import { api } from '@/src/api';
+import * as Battery from 'expo-battery';
+import { openApplicationSettings, openBatterySettings, openDeviceStorageManager, openSecuritySettings, scanLocalDevice, type LocalDeviceScan } from '@/src/deviceStorage';
 import { theme } from '@/src/theme';
-import { useSubscription } from '@/src/lib/revenuecat';
 
 type Tab = 'storage' | 'battery' | 'memory' | 'security';
 
+type BatterySnapshot = {
+  level: number;
+  state: Battery.BatteryState;
+  lowPowerMode: boolean;
+  appOptimizationEnabled: boolean;
+};
+
+function formatMb(mb: number): string {
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(1)} MB`;
+}
+
+function batteryStateLabel(state: Battery.BatteryState): string {
+  if (state === Battery.BatteryState.CHARGING) return 'Charging';
+  if (state === Battery.BatteryState.FULL) return 'Full';
+  if (state === Battery.BatteryState.UNPLUGGED) return 'On battery';
+  return 'Status unavailable';
+}
+
 export default function Insights() {
-  const router = useRouter();
-  const { isSubscribed } = useSubscription();
   const [tab, setTab] = useState<Tab>('storage');
-  const [storage, setStorage] = useState<any>(null);
-  const [battery, setBattery] = useState<any>(null);
-  const [batteryBusy, setBatteryBusy] = useState(false);
-  const [memory, setMemory] = useState<any>(null);
-  const [memoryBusy, setMemoryBusy] = useState(false);
-  const [security, setSecurity] = useState<any>(null);
-  const [securityBusy, setSecurityBusy] = useState<string | null>(null); // finding id (or 'scan') in flight
+  const [storage, setStorage] = useState<LocalDeviceScan | null>(null);
+  const [battery, setBattery] = useState<BatterySnapshot | null>(null);
 
-  const loadSecurity = useCallback(() => {
-    api.security().then(setSecurity).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    api.storage().then(setStorage).catch(() => {});
-    api.battery().then(setBattery).catch(() => {});
-    api.memory().then(setMemory).catch(() => {});
-    loadSecurity();
-  }, [loadSecurity]);
-
-  const onOptimizeBattery = async () => {
-    if (!isSubscribed) { router.push('/paywall'); return; }
-    setBatteryBusy(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+  const load = async () => {
+    setStorage(scanLocalDevice());
     try {
-      const res = await api.optimizeBattery();
-      setBattery(res.state);
-    } catch (e) {
-      console.log(e);
-    } finally {
-      setBatteryBusy(false);
+      const power = await Battery.getPowerStateAsync();
+      const appOptimizationEnabled = await Battery.isBatteryOptimizationEnabledAsync();
+      setBattery({
+        level: power.batteryLevel,
+        state: power.batteryState,
+        lowPowerMode: power.lowPowerMode,
+        appOptimizationEnabled,
+      });
+    } catch {
+      setBattery(null);
     }
   };
 
-  const onBoostMemory = async () => {
-    setMemoryBusy(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    try {
-      const res = await api.boostMemory();
-      setMemory(res.state);
-    } catch (e) {
-      console.log(e);
-    } finally {
-      setMemoryBusy(false);
-    }
-  };
-
-  const onSecurityScan = async () => {
-    setSecurityBusy('scan');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-    try {
-      const res = await api.scanSecurity();
-      setSecurity(res.scan);
-    } catch (e) {
-      console.log(e);
-    } finally {
-      setSecurityBusy(null);
-    }
-  };
-
-  const onRevokeSession = async (sid: string) => {
-    setSecurityBusy(sid);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    try {
-      await api.revokeSession(sid);
-      loadSecurity();
-    } catch (e) {
-      console.log(e);
-    } finally {
-      setSecurityBusy(null);
-    }
-  };
-
-  const onResolveFinding = async (id: string) => {
-    setSecurityBusy(id);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    try {
-      await api.resolveSecurityFinding(id);
-      loadSecurity();
-    } catch (e) {
-      console.log(e);
-    } finally {
-      setSecurityBusy(null);
-    }
-  };
+  useEffect(() => { load(); }, []);
 
   return (
     <View style={styles.container} testID="insights-screen">
       <LinearGradient colors={['#050F14', '#0B1B24']} style={StyleSheet.absoluteFill} />
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
         <View style={styles.header}>
-          <Text style={styles.title}>Insights</Text>
-          <Text style={styles.sub}>Deep-dive analytics for your device</Text>
+          <Text style={styles.title}>Device Insights</Text>
+          <Text style={styles.sub}>Real readings and Android-approved controls</Text>
         </View>
 
-        {/* Segmented control (chip row) */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.chipRow}
-        >
-          {(['storage', 'battery', 'memory', 'security'] as Tab[]).map((t) => (
-            <Pressable
-              key={t}
-              onPress={() => setTab(t)}
-              style={[styles.chip, tab === t && styles.chipActive]}
-              testID={`insight-tab-${t}`}
-            >
-              <Text style={[styles.chipText, tab === t && styles.chipTextActive]}>
-                {t[0].toUpperCase() + t.slice(1)}
-              </Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+          {(['storage', 'battery', 'memory', 'security'] as Tab[]).map((item) => (
+            <Pressable key={item} onPress={() => setTab(item)} style={[styles.chip, tab === item && styles.chipActive]} testID={`insight-tab-${item}`}>
+              <Text style={[styles.chipText, tab === item && styles.chipTextActive]}>{item[0].toUpperCase() + item.slice(1)}</Text>
             </Pressable>
           ))}
         </ScrollView>
 
-        <ScrollView contentContainerStyle={{ paddingBottom: 140, paddingHorizontal: theme.space.lg }} showsVerticalScrollIndicator={false}>
-          {tab === 'storage' && (
-            storage ? <StorageView data={storage} /> : <Loader />
-          )}
-          {tab === 'battery' && (
-            battery ? (
-              <BatteryView
-                data={battery}
-                isPro={isSubscribed}
-                busy={batteryBusy}
-                onOptimize={onOptimizeBattery}
-              />
-            ) : <Loader />
-          )}
-          {tab === 'memory' && (
-            memory ? (
-              <MemoryView data={memory} busy={memoryBusy} onBoost={onBoostMemory} />
-            ) : <Loader />
-          )}
-          {tab === 'security' && (
-            security ? (
-              <SecurityView
-                data={security}
-                busy={securityBusy}
-                onScan={onSecurityScan}
-                onRevokeSession={onRevokeSession}
-                onResolveFinding={onResolveFinding}
-              />
-            ) : <Loader />
+        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          {!storage ? <Loader /> : (
+            <>
+              {tab === 'storage' && <StorageView data={storage} />}
+              {tab === 'battery' && <BatteryView data={battery} />}
+              {tab === 'memory' && <MemoryView />}
+              {tab === 'security' && <SecurityView />}
+            </>
           )}
         </ScrollView>
       </SafeAreaView>
@@ -165,296 +82,102 @@ export default function Insights() {
   );
 }
 
-const Loader = () => (
-  <View style={{ paddingVertical: 60, alignItems: 'center' }}>
-    <ActivityIndicator color={theme.color.brand} />
-  </View>
-);
+const Loader = () => <View style={styles.loader}><ActivityIndicator color={theme.color.brand} /></View>;
 
-const StorageView = ({ data }: { data: any }) => {
-  const usedPct = Math.round((data.used_gb / data.total_gb) * 100);
-  const router = useRouter();
+function StorageView({ data }: { data: LocalDeviceScan }) {
+  const usedPct = data.storage_total_mb > 0 ? Math.round((data.storage_used_mb / data.storage_total_mb) * 100) : 0;
   return (
     <View>
       <View style={styles.card}>
-        <Text style={styles.cardLabel}>Total Storage</Text>
-        <Text style={styles.cardValue}>{data.used_gb.toFixed(1)} <Text style={styles.cardUnit}>/ {data.total_gb} GB</Text></Text>
-        <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: `${usedPct}%` }]} />
-        </View>
-        <Text style={styles.helperText}>{data.free_gb.toFixed(1)} GB free</Text>
+        <Text style={styles.cardLabel}>Storage used</Text>
+        <Text style={styles.cardValue}>{usedPct}%</Text>
+        <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${usedPct}%` }]} /></View>
+        <Text style={styles.helperText}>{formatMb(data.storage_free_mb)} free of {formatMb(data.storage_total_mb)}</Text>
       </View>
-
-      <Pressable style={styles.forecastLink} onPress={() => router.push('/forecast')} testID="storage-forecast-link">
-        <Ionicons name="trending-up" size={18} color={theme.color.info} />
-        <Text style={styles.forecastLinkText}>See storage forecast</Text>
-        <Ionicons name="chevron-forward" size={16} color={theme.color.onSurface3} />
-      </Pressable>
-
-      {/* Stacked horizontal bar */}
-      <Text style={styles.sectionTitle}>Breakdown</Text>
-      <View style={[styles.card, { paddingVertical: theme.space.md }]}>
-        <View style={styles.stackedBar}>
-          {data.breakdown.map((b: any, i: number) => (
-            <View key={i} style={{ width: `${b.pct * 3}%`, height: '100%', backgroundColor: b.color }} />
-          ))}
-        </View>
-        <View style={{ marginTop: theme.space.md, gap: 10 }}>
-          {data.breakdown.map((b: any) => (
-            <View key={b.category} style={styles.breakdownRow}>
-              <View style={[styles.dot, { backgroundColor: b.color }]} />
-              <Text style={styles.breakdownLabel}>{b.category}</Text>
-              <Text style={styles.breakdownValue}>{b.size_gb.toFixed(1)} GB</Text>
-            </View>
-          ))}
-        </View>
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>DevicePulse temporary cache</Text>
+        <Text style={styles.miniValue}>{formatMb(data.cache_mb)}</Text>
+        <Text style={styles.helperText}>Measured locally. DevicePulse does not inspect personal files without Android approval.</Text>
       </View>
+      <ActionButton icon="folder-open-outline" label="Open Android Storage" onPress={openDeviceStorageManager} />
     </View>
   );
-};
+}
 
-type BatteryViewProps = {
-  data: any;
-  isPro: boolean;
-  busy: boolean;
-  onOptimize: () => void;
-};
-
-const BatteryView = ({ data, isPro, busy, onOptimize }: BatteryViewProps) => (
-  <View>
-    <View style={styles.card}>
-      <Text style={styles.cardLabel}>Battery Level</Text>
-      <Text style={styles.cardValue}>{data.level}%</Text>
-      <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: `${data.level}%`, backgroundColor: theme.color.warning }]} />
-      </View>
-      <Text style={styles.helperText}>{data.time_to_empty_hours}h remaining • {data.temperature_c}°C</Text>
-    </View>
-
-    <View style={styles.gridRow}>
-      <View style={[styles.card, styles.halfCard]}>
-        <Text style={styles.miniLabel}>Health</Text>
-        <Text style={styles.miniValue}>{data.health_pct}%</Text>
-      </View>
-      <View style={[styles.card, styles.halfCard]}>
-        <Text style={styles.miniLabel}>Cycles</Text>
-        <Text style={styles.miniValue}>{data.cycle_count}</Text>
-      </View>
-    </View>
-
-    <View style={styles.optimizeRow}>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.optimizeTitle}>Battery Optimizer</Text>
-        <Text style={styles.helperText}>
-          {data.optimizations_run > 0
-            ? `Optimized ${data.optimizations_run}x • restricts your highest-drain apps`
-            : 'Restrict background activity for your highest-drain apps'}
-        </Text>
-      </View>
-      <Pressable
-        style={[styles.optimizeBtn, !isPro && styles.optimizeBtnLocked]}
-        onPress={onOptimize}
-        disabled={busy}
-        testID="battery-optimize-button"
-      >
-        {busy ? (
-          <ActivityIndicator size="small" color={theme.color.onBrand} />
-        ) : (
-          <>
-            {!isPro && <Ionicons name="lock-closed" size={12} color={theme.color.onBrand} />}
-            <Text style={styles.optimizeBtnText}>Optimize now</Text>
-          </>
-        )}
-      </Pressable>
-    </View>
-
-    <Text style={styles.sectionTitle}>{data.drain_apps.length > 0 ? 'Top Drain Apps' : 'No high-drain apps remaining'}</Text>
-    {data.drain_apps.length > 0 && (
+function BatteryView({ data }: { data: BatterySnapshot | null }) {
+  if (!data || data.level < 0) {
+    return <InfoCard icon="battery-half-outline" title="Battery reading unavailable" body="Open Android Battery settings for current usage details." action="Open Battery Settings" onPress={openBatterySettings} />;
+  }
+  const pct = Math.round(data.level * 100);
+  return (
+    <View>
       <View style={styles.card}>
-        {data.drain_apps.map((app: any, i: number) => (
-          <View key={i} style={styles.appRow}>
-            <Text style={{ fontSize: 20 }}>{app.icon}</Text>
-            <Text style={styles.appName}>{app.name}</Text>
-            <View style={styles.appPctBar}>
-              <View style={[styles.appPctFill, { width: `${app.pct * 4}%` }]} />
-            </View>
-            <Text style={styles.appPct}>{app.pct}%</Text>
-          </View>
-        ))}
+        <Text style={styles.cardLabel}>Battery level</Text>
+        <Text style={styles.cardValue}>{pct}%</Text>
+        <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${pct}%`, backgroundColor: theme.color.warning }]} /></View>
+        <Text style={styles.helperText}>{batteryStateLabel(data.state)} • Power saver {data.lowPowerMode ? 'on' : 'off'}</Text>
       </View>
-    )}
-  </View>
-);
-
-type MemoryViewProps = {
-  data: any;
-  busy: boolean;
-  onBoost: () => void;
-};
-
-const MemoryView = ({ data, busy, onBoost }: MemoryViewProps) => (
-  <View>
-    <View style={styles.card}>
-      <Text style={styles.cardLabel}>RAM Used</Text>
-      <Text style={styles.cardValue}>{data.ram_used_pct}%</Text>
-      <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: `${data.ram_used_pct}%`, backgroundColor: '#8B5CF6' }]} />
-      </View>
-      <Text style={styles.helperText}>{data.ram_total_gb} GB total</Text>
-    </View>
-
-    <View style={styles.optimizeRow}>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.optimizeTitle}>Memory Boost</Text>
-        <Text style={styles.helperText}>
-          {data.boosts_run > 0
-            ? `Boosted ${data.boosts_run}x • closes your highest-RAM apps`
-            : 'Close your highest-RAM background apps to free up memory'}
-        </Text>
-      </View>
-      <Pressable
-        style={[styles.optimizeBtn, { backgroundColor: '#8B5CF6' }]}
-        onPress={onBoost}
-        disabled={busy}
-        testID="memory-boost-button"
-      >
-        {busy
-          ? <ActivityIndicator size="small" color={theme.color.onBrand} />
-          : <Text style={styles.optimizeBtnText}>Boost now</Text>}
-      </Pressable>
-    </View>
-
-    <Text style={styles.sectionTitle}>{data.apps_running.length > 0 ? 'Apps Using RAM' : 'No background apps running'}</Text>
-    {data.apps_running.length > 0 && (
       <View style={styles.card}>
-        {data.apps_running.map((app: any, i: number) => (
-          <View key={i} style={styles.appRow}>
-            <Text style={{ fontSize: 20 }}>{app.icon}</Text>
-            <Text style={[styles.appName, { flex: 1 }]}>{app.name}</Text>
-            <Text style={[styles.appPct, { width: 64 }]}>{app.ram_mb} MB</Text>
-          </View>
-        ))}
+        <Text style={styles.cardLabel}>DevicePulse background optimization</Text>
+        <Text style={styles.miniValue}>{data.appOptimizationEnabled ? 'Enabled' : 'Not enabled'}</Text>
+        <Text style={styles.helperText}>Android controls background limits. DevicePulse never claims to stop other apps.</Text>
       </View>
-    )}
-  </View>
-);
+      <ActionButton icon="battery-charging-outline" label="Open Battery Settings" onPress={openBatterySettings} />
+    </View>
+  );
+}
 
-type SecurityViewProps = {
-  data: any;
-  busy: string | null;
-  onScan: () => void;
-  onRevokeSession: (sid: string) => void;
-  onResolveFinding: (id: string) => void;
-};
+function MemoryView() {
+  return <InfoCard icon="hardware-chip-outline" title="Android manages memory" body="Apps cannot safely close other apps or promise to free system RAM. Use Android's app controls if one app is unresponsive or consuming too many resources." action="Open DevicePulse App Settings" onPress={openApplicationSettings} />;
+}
 
-const SecurityView = ({ data, busy, onScan, onRevokeSession, onResolveFinding }: SecurityViewProps) => (
-  <View>
-    <LinearGradient
-      colors={data.status === 'safe' ? theme.gradients.brand : theme.gradients.danger}
-      style={styles.securityHero}
-      start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-    >
-      <Ionicons name={data.status === 'safe' ? 'shield-checkmark' : 'alert-circle'} size={44} color={theme.color.onBrand} />
-      <Text style={styles.securityHeroTitle}>{data.status === 'safe' ? 'Your device is safe' : 'Items need attention'}</Text>
-      <Text style={styles.securityHeroSub}>Scanned {data.apps_scanned} apps · {data.permissions_reviewed} permissions reviewed</Text>
-      <Pressable style={styles.scanAgainPill} onPress={onScan} disabled={busy === 'scan'} testID="security-scan-again">
-        {busy === 'scan' ? <ActivityIndicator size="small" color={theme.color.onBrand} /> : <Text style={styles.scanAgainPillText}>Scan again</Text>}
-      </Pressable>
-    </LinearGradient>
+function SecurityView() {
+  return <InfoCard icon="shield-checkmark-outline" title="Use Android's protected security checks" body="DevicePulse cannot certify that a phone is malware-free. Android Security settings and Google Play Protect can review installed apps, updates and permissions with system-level access." action="Open Security Settings" onPress={openSecuritySettings} />;
+}
 
-    <Text style={styles.sectionTitle}>{data.findings.length > 0 ? 'Items to review' : 'No issues found'}</Text>
-    {data.findings.map((f: any) => (
-      <View key={f.id} style={styles.card} testID={`security-finding-${f.id}`}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <View style={[styles.severityBadge, {
-            backgroundColor: f.severity === 'high' ? theme.color.error + '33' : f.severity === 'medium' ? theme.color.warning + '33' : theme.color.info + '33'
-          }]}>
-            <Text style={[styles.severityText, {
-              color: f.severity === 'high' ? theme.color.error : f.severity === 'medium' ? theme.color.warning : theme.color.info
-            }]}>{f.severity.toUpperCase()}</Text>
-          </View>
-          <Text style={styles.threatCategory}>{f.category}</Text>
-        </View>
-        <Text style={styles.threatTitle}>{f.title}</Text>
-        <Text style={styles.threatBody}>{f.description}</Text>
-        {f.action === 'revoke_session' && (
-          <Pressable
-            style={styles.findingActionBtn}
-            onPress={() => onRevokeSession(f.session_sid)}
-            disabled={busy === f.session_sid}
-            testID={`security-revoke-${f.session_sid}`}
-          >
-            {busy === f.session_sid
-              ? <ActivityIndicator size="small" color={theme.color.error} />
-              : <Text style={styles.findingActionText}>Revoke this session</Text>}
-          </Pressable>
-        )}
-        {f.action === 'resolve' && (
-          <Pressable
-            style={styles.findingActionBtn}
-            onPress={() => onResolveFinding(f.id)}
-            disabled={busy === f.id}
-            testID={`security-resolve-${f.id}`}
-          >
-            {busy === f.id
-              ? <ActivityIndicator size="small" color={theme.color.brand} />
-              : <Text style={[styles.findingActionText, { color: theme.color.brand }]}>Mark as resolved</Text>}
-          </Pressable>
-        )}
-      </View>
-    ))}
-  </View>
-);
+function InfoCard({ icon, title, body, action, onPress }: { icon: keyof typeof Ionicons.glyphMap; title: string; body: string; action: string; onPress: () => void | Promise<void> }) {
+  return (
+    <View style={styles.infoCard}>
+      <View style={styles.infoIcon}><Ionicons name={icon} size={34} color={theme.color.brand} /></View>
+      <Text style={styles.infoTitle}>{title}</Text>
+      <Text style={styles.infoBody}>{body}</Text>
+      <ActionButton icon="open-outline" label={action} onPress={onPress} />
+    </View>
+  );
+}
+
+function ActionButton({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void | Promise<void> }) {
+  return (
+    <Pressable style={styles.actionButton} onPress={onPress}>
+      <Ionicons name={icon} size={18} color={theme.color.onBrand} />
+      <Text style={styles.actionButtonText}>{label}</Text>
+    </Pressable>
+  );
+}
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.color.surface },
-  header: { paddingHorizontal: theme.space.lg, paddingTop: theme.space.md, paddingBottom: theme.space.sm },
+  header: { paddingHorizontal: theme.space.lg, paddingTop: theme.space.md, paddingBottom: theme.space.md },
   title: { color: theme.color.onSurface, fontSize: 28, fontWeight: '800', letterSpacing: -0.5 },
   sub: { color: theme.color.onSurface2, fontSize: 13, marginTop: 2 },
-  chipRow: { paddingHorizontal: theme.space.lg, paddingVertical: theme.space.sm, gap: 8, height: 56 },
-  chip: { height: 36, paddingHorizontal: 16, borderRadius: theme.radius.pill, backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  chipRow: { paddingHorizontal: theme.space.lg, gap: 8, paddingBottom: theme.space.md },
+  chip: { paddingHorizontal: 16, paddingVertical: 9, borderRadius: theme.radius.pill, backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border },
   chipActive: { backgroundColor: theme.color.brand3, borderColor: theme.color.brand },
   chipText: { color: theme.color.onSurface2, fontSize: 13, fontWeight: '600' },
-  chipTextActive: { color: theme.color.brand, fontWeight: '700' },
+  chipTextActive: { color: theme.color.brand },
+  content: { paddingHorizontal: theme.space.lg, paddingBottom: 140 },
+  loader: { paddingVertical: 60, alignItems: 'center' },
   card: { backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.lg, borderWidth: 1, borderColor: theme.color.border, marginBottom: theme.space.md },
-  cardLabel: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8 },
-  cardValue: { color: theme.color.onSurface, fontSize: 32, fontWeight: '800', marginTop: 4, letterSpacing: -1 },
-  cardUnit: { color: theme.color.onSurface3, fontSize: 15, fontWeight: '500' },
-  progressTrack: { height: 8, borderRadius: 4, backgroundColor: theme.color.surface3, marginTop: theme.space.md, overflow: 'hidden' },
-  progressFill: { height: '100%', backgroundColor: theme.color.brand, borderRadius: 4 },
-  helperText: { color: theme.color.onSurface3, fontSize: 12, marginTop: 8 },
-  forecastLink: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, padding: theme.space.md, borderWidth: 1, borderColor: theme.color.info + '44', marginBottom: theme.space.md },
-  forecastLinkText: { color: theme.color.onSurface, fontSize: 14, fontWeight: '600', flex: 1 },
-  sectionTitle: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '700', letterSpacing: 1.1, textTransform: 'uppercase', marginTop: theme.space.md, marginBottom: theme.space.sm },
-  stackedBar: { height: 14, borderRadius: 7, overflow: 'hidden', flexDirection: 'row', backgroundColor: theme.color.surface3 },
-  breakdownRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  dot: { width: 10, height: 10, borderRadius: 5 },
-  breakdownLabel: { color: theme.color.onSurface, fontSize: 14, flex: 1 },
-  breakdownValue: { color: theme.color.onSurface2, fontSize: 13, fontWeight: '600' },
-  gridRow: { flexDirection: 'row', gap: theme.space.md },
-  halfCard: { flex: 1 },
-  miniLabel: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '600' },
-  miniValue: { color: theme.color.onSurface, fontSize: 24, fontWeight: '800', marginTop: 4 },
-  appRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6 },
-  appName: { color: theme.color.onSurface, fontSize: 14, width: 90 },
-  appPctBar: { flex: 1, height: 6, borderRadius: 3, backgroundColor: theme.color.surface3, overflow: 'hidden' },
-  appPctFill: { height: '100%', backgroundColor: theme.color.warning, borderRadius: 3 },
-  appPct: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '600', width: 34, textAlign: 'right' },
-  optimizeRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.md, borderWidth: 1, borderColor: theme.color.border, marginBottom: theme.space.md },
-  optimizeTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
-  optimizeBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 36, paddingHorizontal: 14, borderRadius: theme.radius.pill, backgroundColor: theme.color.warning, justifyContent: 'center' },
-  optimizeBtnLocked: { backgroundColor: theme.color.surface3, borderWidth: 1, borderColor: theme.color.border },
-  optimizeBtnText: { color: theme.color.onBrand, fontSize: 13, fontWeight: '700' },
-  securityHero: { borderRadius: theme.radius.lg, padding: theme.space.xl, alignItems: 'center', marginBottom: theme.space.md },
-  securityHeroTitle: { color: theme.color.onBrand, fontSize: 20, fontWeight: '800', marginTop: 10 },
-  securityHeroSub: { color: 'rgba(2,44,34,0.8)', fontSize: 12, marginTop: 4, textAlign: 'center' },
-  scanAgainPill: { marginTop: 14, height: 34, paddingHorizontal: 16, borderRadius: theme.radius.pill, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(2,44,34,0.18)', borderWidth: 1, borderColor: 'rgba(2,44,34,0.35)' },
-  scanAgainPillText: { color: theme.color.onBrand, fontSize: 12, fontWeight: '700' },
-  findingActionBtn: { marginTop: 10, alignSelf: 'flex-start', paddingVertical: 6, paddingHorizontal: 2 },
-  findingActionText: { color: theme.color.error, fontSize: 12, fontWeight: '700' },
-  severityBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill },
-  severityText: { fontSize: 10, fontWeight: '800' },
-  threatCategory: { color: theme.color.onSurface3, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.8, fontWeight: '600' },
-  threatTitle: { color: theme.color.onSurface, fontSize: 15, fontWeight: '700' },
-  threatBody: { color: theme.color.onSurface2, fontSize: 13, marginTop: 4, lineHeight: 19 },
+  cardLabel: { color: theme.color.onSurface2, fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '700' },
+  cardValue: { color: theme.color.onSurface, fontSize: 40, fontWeight: '800', marginTop: 6 },
+  miniValue: { color: theme.color.onSurface, fontSize: 23, fontWeight: '800', marginTop: 8 },
+  helperText: { color: theme.color.onSurface2, fontSize: 13, lineHeight: 19, marginTop: 8 },
+  progressTrack: { height: 9, borderRadius: 5, backgroundColor: theme.color.surface3, overflow: 'hidden', marginTop: 12 },
+  progressFill: { height: '100%', backgroundColor: theme.color.brand, borderRadius: 5 },
+  actionButton: { minHeight: 50, borderRadius: theme.radius.pill, backgroundColor: theme.color.brand, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 22, marginTop: theme.space.sm },
+  actionButtonText: { color: theme.color.onBrand, fontSize: 15, fontWeight: '700' },
+  infoCard: { backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.xl, borderWidth: 1, borderColor: theme.color.border, alignItems: 'center' },
+  infoIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: theme.color.brand3, alignItems: 'center', justifyContent: 'center', marginBottom: theme.space.md },
+  infoTitle: { color: theme.color.onSurface, fontSize: 20, fontWeight: '800', textAlign: 'center' },
+  infoBody: { color: theme.color.onSurface2, fontSize: 14, lineHeight: 21, textAlign: 'center', marginTop: 8, marginBottom: theme.space.md },
 });

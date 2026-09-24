@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Switch, Modal, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Switch, Modal, ActivityIndicator, Linking } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -74,8 +74,8 @@ export default function Settings() {
                   <Ionicons name="sparkles" size={11} color={theme.color.onBrand} />
                   <Text style={styles.proTagText}>DEVICEPULSE PRO</Text>
                 </View>
-                <Text style={styles.proTitle}>Unlock deep cleanup</Text>
-                <Text style={styles.proBody}>Auto-scan, scheduled cleanups, priority support.</Text>
+                <Text style={styles.proTitle}>Unlock DevicePulse Pro</Text>
+                <Text style={styles.proBody}>Family sync, extended history, reminders and priority support.</Text>
               </View>
               <Ionicons name="arrow-forward-circle" size={36} color={theme.color.onBrand} />
             </LinearGradient>
@@ -95,21 +95,13 @@ export default function Settings() {
 
           <Text style={styles.section}>Your Progress</Text>
           <View style={styles.card}>
-            <NavRow icon="flame-outline" label="Cleanup streak" onPress={() => router.push('/streak')} testID="settings-streak" />
+            <NavRow icon="flame-outline" label="Storage-check streak" onPress={() => router.push('/streak')} testID="settings-streak" />
             <Divider />
-            <NavRow icon="pulse-outline" label="Health trends" onPress={() => router.push('/trends')} testID="settings-trends" />
-            <Divider />
-            <NavRow icon="time-outline" label="Scan history" onPress={() => router.push('/history')} testID="settings-history" />
-            <Divider />
-            <NavRow icon="trending-up-outline" label="Storage forecast" onPress={() => router.push('/forecast')} testID="settings-forecast" />
+            <NavRow icon="time-outline" label="Verified cleanup history" onPress={() => router.push('/history')} testID="settings-history" />
             <Divider />
             <NavRow icon="gift-outline" label="Refer a friend" badge="Free Pro" onPress={() => router.push('/referral')} testID="settings-referral" />
             <Divider />
-            <NavRow icon="grid-outline" label="Home screen widget" onPress={() => router.push('/widget-preview')} testID="settings-widget" />
-            <Divider />
-            <NavRow icon="share-social-outline" label="Cleanup report" onPress={() => router.push('/cleanup-report')} testID="settings-cleanup-report" />
-            <Divider />
-            <NavRow icon="time-outline" label="Auto-Clean scheduling" badge="Pro" onPress={() => router.push('/autoclean')} testID="settings-autoclean" />
+            <NavRow icon="share-social-outline" label="Verified cleanup report" onPress={() => router.push('/cleanup-report')} testID="settings-cleanup-report" />
           </View>
 
           <Text style={styles.section}>Preferences</Text>
@@ -126,18 +118,16 @@ export default function Settings() {
 
           <Text style={styles.section}>Support</Text>
           <View style={styles.card}>
-            <NavRow icon="help-circle-outline" label="Help center" testID="settings-help" />
+            <NavRow icon="help-circle-outline" label="Help center" onPress={() => Linking.openURL('https://verolane.ca/pages/contact')} testID="settings-help" />
             <Divider />
-            <NavRow icon="mail-outline" label="Contact support" testID="settings-contact" />
-            <Divider />
-            <NavRow icon="star-outline" label="Rate DevicePulse" testID="settings-rate" />
+            <NavRow icon="mail-outline" label="Contact support" onPress={() => Linking.openURL('https://verolane.ca/pages/contact')} testID="settings-contact" />
           </View>
 
           <Text style={styles.section}>About</Text>
           <View style={styles.card}>
-            <NavRow icon="document-text-outline" label="Privacy policy" testID="settings-privacy" />
+            <NavRow icon="document-text-outline" label="Privacy policy" onPress={() => Linking.openURL('https://verolane.ca/pages/devicepulse-privacy-policy')} testID="settings-privacy" />
             <Divider />
-            <NavRow icon="shield-checkmark-outline" label="Terms of service" testID="settings-terms" />
+            <NavRow icon="shield-checkmark-outline" label="Terms of service" onPress={() => Linking.openURL('https://verolane.ca/policies/terms-of-service')} testID="settings-terms" />
           </View>
 
           <Text style={styles.section}>Account</Text>
@@ -154,7 +144,7 @@ export default function Settings() {
 
           <View style={styles.footer}>
             <VLogo size={40} />
-            <Text style={styles.footerBrand}>DevicePulse v1.0.0</Text>
+            <Text style={styles.footerBrand}>DevicePulse v1.0.2</Text>
             <Text style={styles.footerCorp}>© Verolane Digital Solutions</Text>
           </View>
         </ScrollView>

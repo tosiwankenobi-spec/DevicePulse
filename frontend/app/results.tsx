@@ -1,62 +1,59 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Modal, ActivityIndicator, Share, Platform } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import * as Sharing from 'expo-sharing';
-import { captureRef } from 'react-native-view-shot';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
-import { HealthRing } from '@/src/components/HealthRing';
 import { api } from '@/src/api';
+import { clearDevicePulseCache, openDeviceStorageManager, scanLocalDevice, type LocalDeviceScan } from '@/src/deviceStorage';
 import { theme } from '@/src/theme';
 
-const CATS = [
-  { key: 'junk_mb', label: 'Junk files', icon: 'trash-outline', color: theme.color.warning },
-  { key: 'duplicates_mb', label: 'Duplicates', icon: 'copy-outline', color: theme.color.info },
-  { key: 'large_files_mb', label: 'Large files', icon: 'folder-open-outline', color: '#8B5CF6' },
-  { key: 'cache_mb', label: 'App cache', icon: 'server-outline', color: theme.color.brand },
-] as const;
+function formatMb(mb: number): string {
+  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
+  if (mb >= 1) return `${mb.toFixed(1)} MB`;
+  return `${Math.round(mb * 1024)} KB`;
+}
 
 export default function Results() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const data = useMemo(() => {
+  const data = useMemo<LocalDeviceScan | null>(() => {
     try { return JSON.parse(params.data as string); } catch { return null; }
   }, [params.data]);
-  const [selected, setSelected] = useState<Record<string, boolean>>({ junk_mb: true, duplicates_mb: true, large_files_mb: false, cache_mb: true });
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cleaning, setCleaning] = useState(false);
-  const [cleanedResult, setCleanedResult] = useState<any>(null);
+  const [cleanedMb, setCleanedMb] = useState<number | null>(null);
 
-  if (!data) return (
-    <View style={styles.container}><Text style={styles.emptyText}>No scan data</Text></View>
-  );
+  if (!data) {
+    return <View style={styles.container}><Text style={styles.emptyText}>No device storage data is available.</Text></View>;
+  }
 
-  const total = CATS.filter(c => selected[c.key]).reduce((a, c) => a + (data[c.key] || 0), 0);
-
-  const toggle = (k: string) => {
-    setSelected(s => ({ ...s, [k]: !s[k] }));
-    Haptics.selectionAsync();
-  };
-
-  const doClean = async () => {
+  const doClearCache = async () => {
+    setConfirmOpen(false);
     setCleaning(true);
     try {
-      const cats = CATS.filter(c => selected[c.key]).map(c => c.label);
-      const res = await api.runClean({ categories: cats, reclaimable_mb: total });
-      setCleanedResult(res);
+      const removedMb = clearDevicePulseCache();
+      const after = scanLocalDevice();
+      if (removedMb > 0) {
+        try {
+          await api.runClean({ categories: ['DevicePulse temporary cache'], reclaimable_mb: removedMb });
+        } catch {
+          // Local cleanup succeeded; history sync can fail independently.
+        }
+      }
+      setCleanedMb(removedMb);
+      data.health_after = after.health_before;
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (e) {
-      console.log(e);
+    } catch {
+      Alert.alert('Cache not cleared', 'Android kept the active cache files in use. You can clear them from Android Storage settings.');
     } finally {
       setCleaning(false);
     }
   };
 
-  if (cleanedResult) {
-    return <SuccessView data={cleanedResult} onDone={() => router.replace('/(tabs)')} />;
+  if (cleanedMb !== null) {
+    return <CleanupComplete removedMb={cleanedMb} onDone={() => router.replace('/(tabs)')} />;
   }
 
   return (
@@ -67,182 +64,113 @@ export default function Results() {
           <Pressable onPress={() => router.back()} hitSlop={12} testID="results-back">
             <Ionicons name="chevron-back" size={26} color={theme.color.onSurface} />
           </Pressable>
-          <Text style={styles.topTitle}>Scan Results</Text>
+          <Text style={styles.topTitle}>Storage Results</Text>
           <View style={{ width: 26 }} />
         </View>
-        <ScrollView contentContainerStyle={{ paddingBottom: 140, paddingHorizontal: theme.space.lg }}>
+
+        <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.totalCard}>
-            <Text style={styles.totalLabel}>Selected to clean</Text>
-            <Text style={styles.totalValue}>{(total / 1024).toFixed(2)} GB</Text>
-            <Text style={styles.totalSub}>Health after cleanup: {data.health_after}/100</Text>
+            <Text style={styles.totalLabel}>Device storage used</Text>
+            <Text style={styles.totalValue}>{formatMb(data.storage_used_mb)}</Text>
+            <Text style={styles.totalSub}>{formatMb(data.storage_free_mb)} free of {formatMb(data.storage_total_mb)}</Text>
           </View>
 
-          <Text style={styles.section}>Choose what to remove</Text>
-          {CATS.map((c, i) => (
-            <Animated.View key={c.key} entering={FadeInDown.delay(i * 80)}>
-              <Pressable style={[styles.catRow, selected[c.key] && styles.catRowActive]} onPress={() => toggle(c.key)} testID={`cat-${c.key}`}>
-                <View style={[styles.catIcon, { backgroundColor: c.color + '22' }]}>
-                  <Ionicons name={c.icon as any} size={20} color={c.color} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.catTitle}>{c.label}</Text>
-                  <Text style={styles.catSize}>{(data[c.key] || 0).toFixed(0)} MB</Text>
-                </View>
-                <View style={[styles.checkbox, selected[c.key] && styles.checkboxActive]}>
-                  {selected[c.key] && <Ionicons name="checkmark" size={16} color={theme.color.onBrand} />}
-                </View>
-              </Pressable>
-            </Animated.View>
-          ))}
+          <Text style={styles.section}>Safe cleanup available</Text>
+          <View style={styles.actionCard}>
+            <View style={[styles.actionIcon, { backgroundColor: theme.color.brand3 }]}>
+              <Ionicons name="flash-outline" size={22} color={theme.color.brand} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.actionTitle}>DevicePulse temporary cache</Text>
+              <Text style={styles.actionBody}>{formatMb(data.cache_mb)} measured on this device</Text>
+            </View>
+          </View>
 
           <View style={styles.assurance}>
-            <Ionicons name="shield-checkmark" size={18} color={theme.color.brand} />
-            <Text style={styles.assuranceText}>
-              We only remove files you approve. Nothing personal is touched.
-            </Text>
+            <Ionicons name="shield-checkmark" size={20} color={theme.color.brand} />
+            <Text style={styles.assuranceText}>DevicePulse can clear only its own temporary files. Your photos, downloads, messages and other apps stay untouched.</Text>
           </View>
+
+          <Text style={styles.section}>Review personal files safely</Text>
+          <View style={styles.actionCard}>
+            <View style={[styles.actionIcon, { backgroundColor: '#0EA5E922' }]}>
+              <Ionicons name="folder-open-outline" size={22} color={theme.color.info} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.actionTitle}>Android Storage Manager</Text>
+              <Text style={styles.actionBody}>Review large files, downloads, photos and app storage using Android&apos;s protected controls.</Text>
+            </View>
+          </View>
+          <Pressable style={styles.secondaryButton} onPress={openDeviceStorageManager} testID="open-storage-manager">
+            <Ionicons name="open-outline" size={18} color={theme.color.brand} />
+            <Text style={styles.secondaryButtonText}>Open Android Storage</Text>
+          </Pressable>
         </ScrollView>
 
         <View style={styles.bottomBar}>
-          <Pressable
-            style={[styles.cta, total === 0 && { opacity: 0.4 }]}
-            onPress={() => total > 0 && setConfirmOpen(true)}
-            disabled={total === 0}
-            testID="clean-now-button"
-          >
+          <Pressable style={[styles.cta, data.cache_mb <= 0 && styles.ctaDisabled]} onPress={() => data.cache_mb > 0 && setConfirmOpen(true)} disabled={data.cache_mb <= 0 || cleaning} testID="clear-cache-button">
             <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
-            <Text style={styles.ctaText}>Clean {(total / 1024).toFixed(2)} GB</Text>
+            {cleaning ? <ActivityIndicator color={theme.color.onBrand} /> : <Text style={styles.ctaText}>{data.cache_mb > 0 ? `Clear ${formatMb(data.cache_mb)} cache` : 'Cache is already clear'}</Text>}
           </Pressable>
         </View>
       </SafeAreaView>
 
-      {/* Confirm modal */}
       <Modal visible={confirmOpen} transparent animationType="fade" onRequestClose={() => setConfirmOpen(false)}>
         <View style={styles.modalBg}>
-          <Animated.View entering={FadeIn} style={styles.modalCard}>
-            <View style={styles.modalIcon}>
-              <Ionicons name="alert-circle" size={32} color={theme.color.brand} />
-            </View>
-            <Text style={styles.modalTitle}>Confirm cleanup</Text>
-            <Text style={styles.modalBody}>
-              We&apos;ll free up {(total / 1024).toFixed(2)} GB by removing the items you selected. This can&apos;t be undone.
-            </Text>
+          <View style={styles.modalCard}>
+            <View style={styles.modalIcon}><Ionicons name="shield-checkmark" size={32} color={theme.color.brand} /></View>
+            <Text style={styles.modalTitle}>Clear DevicePulse cache?</Text>
+            <Text style={styles.modalBody}>This removes {formatMb(data.cache_mb)} of DevicePulse temporary files only. Personal files and other apps are not touched.</Text>
             <View style={styles.modalButtons}>
-              <Pressable style={[styles.modalBtn, styles.modalBtnGhost]} onPress={() => setConfirmOpen(false)} testID="confirm-cancel">
-                <Text style={styles.modalBtnGhostText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.modalBtn, styles.modalBtnPrimary]}
-                onPress={() => { setConfirmOpen(false); doClean(); }}
-                testID="confirm-clean"
-              >
-                {cleaning ? <ActivityIndicator color={theme.color.onBrand} /> : <Text style={styles.modalBtnPrimaryText}>Clean now</Text>}
-              </Pressable>
+              <Pressable style={[styles.modalBtn, styles.modalBtnGhost]} onPress={() => setConfirmOpen(false)}><Text style={styles.modalBtnGhostText}>Cancel</Text></Pressable>
+              <Pressable style={[styles.modalBtn, styles.modalBtnPrimary]} onPress={doClearCache} testID="confirm-clear-cache"><Text style={styles.modalBtnPrimaryText}>Clear cache</Text></Pressable>
             </View>
-          </Animated.View>
+          </View>
         </View>
       </Modal>
     </View>
   );
 }
 
-const SuccessView = ({ data, onDone }: { data: any; onDone: () => void }) => {
-  const cardRef = React.useRef<View>(null);
-  const [referralCode, setReferralCode] = React.useState<string>('');
-
-  React.useEffect(() => {
-    (async () => {
-      try {
-        const r = await api.referral();
-        setReferralCode(r.code);
-      } catch (e) { console.log(e); }
-    })();
-  }, []);
-
-  const onShare = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const gb = (data.reclaimed_mb / 1024).toFixed(2);
-    const msg = `I just freed ${gb} GB and boosted my phone's health from ${data.health_before} to ${data.health_after} with DevicePulse! 🚀${referralCode ? ` Use my code ${referralCode} — we both get a free week of Pro.` : ''}`;
-    try {
-      if (Platform.OS === 'web') {
-        await Share.share({ message: msg });
-        return;
-      }
-      const uri = await captureRef(cardRef, { format: 'png', quality: 0.95 });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { dialogTitle: 'Share your cleanup' });
-      } else {
-        await Share.share({ message: msg });
-      }
-    } catch (e) {
-      console.log(e);
-      try { await Share.share({ message: msg }); } catch {}
-    }
-  };
-
+function CleanupComplete({ removedMb, onDone }: { removedMb: number; onDone: () => void }) {
+  const shareResult = () => Share.share({ message: `DevicePulse safely cleared ${formatMb(removedMb)} of its temporary cache. My personal files stayed untouched.` });
   return (
-  <View style={styles.container} testID="results-success-screen">
-    <LinearGradient colors={theme.gradients.hero2} style={StyleSheet.absoluteFill} />
-    <SafeAreaView style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: theme.space.xl }}>
-      {/* Shareable branded card */}
-      <View ref={cardRef} collapsable={false} style={styles.shareCard} testID="share-card">
-        <LinearGradient colors={theme.gradients.hero2} style={StyleSheet.absoluteFill} />
-        <Animated.View entering={FadeIn.duration(500)} style={styles.successIcon}>
-          <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} />
-          <Ionicons name="checkmark" size={54} color={theme.color.onBrand} />
-        </Animated.View>
-        <Text style={styles.successTitle}>All clean!</Text>
-        <Text style={styles.successBody}>Freed <Text style={{ color: theme.color.brand, fontWeight: '800' }}>{(data.reclaimed_mb / 1024).toFixed(2)} GB</Text> of storage</Text>
-
-        <View style={styles.compareRow}>
-          <View style={styles.compareCol}>
-            <Text style={styles.compareLabel}>Before</Text>
-            <HealthRing score={data.health_before} size={110} label=" " />
-          </View>
-          <Ionicons name="arrow-forward" size={22} color={theme.color.onSurface2} />
-          <View style={styles.compareCol}>
-            <Text style={styles.compareLabel}>After</Text>
-            <HealthRing score={data.health_after} size={110} label=" " />
-          </View>
-        </View>
-        <Text style={styles.brandStamp}>⚡ DevicePulse by Verolane</Text>
-      </View>
-
-      <Pressable style={styles.shareResultBtn} onPress={onShare} testID="share-result-button">
-        <Ionicons name="share-social" size={18} color={theme.color.brand} />
-        <Text style={styles.shareResultText}>Share result</Text>
-      </Pressable>
-
-      <Pressable style={[styles.cta, { marginTop: theme.space.md, width: '100%', maxWidth: 360 }]} onPress={onDone} testID="done-button">
-        <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
-        <Text style={styles.ctaText}>Back to dashboard</Text>
-      </Pressable>
-    </SafeAreaView>
-  </View>
+    <View style={styles.container} testID="results-success-screen">
+      <LinearGradient colors={theme.gradients.hero2} style={StyleSheet.absoluteFill} />
+      <SafeAreaView style={styles.successWrap}>
+        <View style={styles.successIcon}><Ionicons name="checkmark" size={54} color={theme.color.onBrand} /></View>
+        <Text style={styles.successTitle}>Cache cleared</Text>
+        <Text style={styles.successBody}>{removedMb > 0 ? `${formatMb(removedMb)} of DevicePulse temporary files removed.` : 'The temporary cache was already empty.'}</Text>
+        <Text style={styles.successNote}>No personal files or other apps were changed.</Text>
+        <Pressable style={styles.secondaryButton} onPress={shareResult}><Ionicons name="share-social" size={18} color={theme.color.brand} /><Text style={styles.secondaryButtonText}>Share result</Text></Pressable>
+        <Pressable style={[styles.cta, styles.doneButton]} onPress={onDone} testID="done-button"><LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} /><Text style={styles.ctaText}>Back to dashboard</Text></Pressable>
+      </SafeAreaView>
+    </View>
   );
-};
+}
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.color.surface },
+  content: { paddingHorizontal: theme.space.lg, paddingBottom: 150 },
   topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: theme.space.lg, paddingTop: theme.space.sm, paddingBottom: theme.space.md },
   topTitle: { color: theme.color.onSurface, fontSize: 16, fontWeight: '700' },
   emptyText: { color: theme.color.onSurface2, textAlign: 'center', marginTop: 40 },
   totalCard: { backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.xl, borderWidth: 1, borderColor: theme.color.brand3, alignItems: 'center' },
   totalLabel: { color: theme.color.brand, fontSize: 12, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
-  totalValue: { color: theme.color.onSurface, fontSize: 44, fontWeight: '800', marginTop: 4, letterSpacing: -1.5 },
-  totalSub: { color: theme.color.onSurface2, fontSize: 13, marginTop: 4 },
+  totalValue: { color: theme.color.onSurface, fontSize: 42, fontWeight: '800', marginTop: 6, letterSpacing: -1.2 },
+  totalSub: { color: theme.color.onSurface2, fontSize: 13, marginTop: 6 },
   section: { color: theme.color.onSurface2, fontSize: 12, fontWeight: '700', letterSpacing: 1.1, textTransform: 'uppercase', marginTop: theme.space.lg, marginBottom: theme.space.sm },
-  catRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: theme.color.surface2, padding: theme.space.md, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.border, marginBottom: theme.space.sm },
-  catRowActive: { borderColor: theme.color.brand },
-  catIcon: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  catTitle: { color: theme.color.onSurface, fontSize: 15, fontWeight: '600' },
-  catSize: { color: theme.color.onSurface3, fontSize: 12, marginTop: 2 },
-  checkbox: { width: 24, height: 24, borderRadius: 6, borderWidth: 1.5, borderColor: theme.color.border, alignItems: 'center', justifyContent: 'center' },
-  checkboxActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
-  assurance: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: theme.space.lg, padding: theme.space.md, backgroundColor: theme.color.brand3, borderRadius: theme.radius.md },
+  actionCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: theme.color.surface2, padding: theme.space.md, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.border },
+  actionIcon: { width: 44, height: 44, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  actionTitle: { color: theme.color.onSurface, fontSize: 15, fontWeight: '700' },
+  actionBody: { color: theme.color.onSurface2, fontSize: 12, lineHeight: 17, marginTop: 3 },
+  assurance: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: theme.space.md, padding: theme.space.md, backgroundColor: theme.color.brand3, borderRadius: theme.radius.md },
   assuranceText: { color: theme.color.onSurface, fontSize: 12, flex: 1, lineHeight: 17 },
+  secondaryButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 48, paddingHorizontal: 22, borderRadius: theme.radius.pill, borderWidth: 1.5, borderColor: theme.color.brand, marginTop: theme.space.md },
+  secondaryButtonText: { color: theme.color.brand, fontSize: 15, fontWeight: '700' },
   bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: theme.space.lg, paddingBottom: 32, backgroundColor: theme.color.surface, borderTopWidth: 1, borderTopColor: theme.color.border },
-  cta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', height: 54, borderRadius: theme.radius.pill, overflow: 'hidden' },
+  cta: { height: 54, borderRadius: theme.radius.pill, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+  ctaDisabled: { opacity: 0.45 },
   ctaText: { color: theme.color.onBrand, fontSize: 16, fontWeight: '700' },
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', alignItems: 'center', justifyContent: 'center', padding: theme.space.xl },
   modalCard: { backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.xl, borderWidth: 1, borderColor: theme.color.border, alignItems: 'center', width: '100%' },
@@ -255,14 +183,10 @@ const styles = StyleSheet.create({
   modalBtnGhostText: { color: theme.color.onSurface, fontWeight: '600' },
   modalBtnPrimary: { backgroundColor: theme.color.brand },
   modalBtnPrimaryText: { color: theme.color.onBrand, fontWeight: '700' },
-  successIcon: { width: 120, height: 120, borderRadius: 60, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', marginBottom: theme.space.xl },
-  successTitle: { color: theme.color.onSurface, fontSize: 30, fontWeight: '800', letterSpacing: -0.5 },
-  successBody: { color: theme.color.onSurface2, fontSize: 15, marginTop: 8, textAlign: 'center' },
-  compareRow: { flexDirection: 'row', alignItems: 'center', gap: theme.space.md, marginTop: theme.space.lg },
-  compareCol: { alignItems: 'center' },
-  compareLabel: { color: theme.color.onSurface2, fontSize: 12, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 },
-  shareCard: { width: '100%', maxWidth: 360, borderRadius: theme.radius.lg, padding: theme.space.xl, alignItems: 'center', overflow: 'hidden', borderWidth: 1, borderColor: theme.color.border },
-  brandStamp: { color: theme.color.onSurface2, fontSize: 13, fontWeight: '700', marginTop: theme.space.lg, letterSpacing: 0.3 },
-  shareResultBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 50, paddingHorizontal: 28, borderRadius: theme.radius.pill, borderWidth: 1.5, borderColor: theme.color.brand, marginTop: theme.space.lg },
-  shareResultText: { color: theme.color.brand, fontSize: 15, fontWeight: '700' },
+  successWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: theme.space.xl },
+  successIcon: { width: 120, height: 120, borderRadius: 60, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.color.brand, marginBottom: theme.space.xl },
+  successTitle: { color: theme.color.onSurface, fontSize: 30, fontWeight: '800' },
+  successBody: { color: theme.color.onSurface, fontSize: 16, marginTop: 10, textAlign: 'center' },
+  successNote: { color: theme.color.onSurface2, fontSize: 13, marginTop: 8, textAlign: 'center' },
+  doneButton: { marginTop: theme.space.md, width: '100%', maxWidth: 360 },
 });

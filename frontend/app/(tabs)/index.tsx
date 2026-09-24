@@ -1,216 +1,86 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, ActivityIndicator } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as Battery from 'expo-battery';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import { HealthRing } from '@/src/components/HealthRing';
 import { GlassCard } from '@/src/components/GlassCard';
+import { HealthRing } from '@/src/components/HealthRing';
 import { VLogo } from '@/src/components/VLogo';
-import { api } from '@/src/api';
+import { scanLocalDevice, type LocalDeviceScan } from '@/src/deviceStorage';
 import { useAuth } from '@/src/AuthContext';
 import { theme } from '@/src/theme';
 
-type Health = {
-  score: number;
-  status: string;
-  storage_used_gb: number;
-  storage_total_gb: number;
-  ram_used_pct: number;
-  battery_pct: number;
-  battery_health_pct: number;
-  security_status: string;
-  issues_found: number;
-};
+function formatMb(mb: number): string {
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(1)} MB`;
+}
 
-type Rec = { title: string; description: string; impact: string };
-
-type Pulse = {
-  date: string;
-  score: number;
-  status: string;
-  headline: string;
-  delta: number;
-  storage_used_pct: number;
-  battery_pct: number;
-  security_ok: boolean;
-};
-
-type Nudge = {
-  type: string;
-  title: string;
-  message: string;
-  cta_label: string;
-  cta_route: string;
-  priority: number;
-};
+function statusFor(score: number): string {
+  if (score >= 85) return 'Storage looks healthy';
+  if (score >= 65) return 'Storage needs attention';
+  return 'Storage is running low';
+}
 
 export default function Home() {
   const router = useRouter();
   const { user, justLoggedIn, clearJustLoggedIn } = useAuth();
-  const [health, setHealth] = useState<Health | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [recs, setRecs] = useState<Rec[] | null>(null);
-  const [loadingRecs, setLoadingRecs] = useState(false);
+  const [device, setDevice] = useState<LocalDeviceScan | null>(null);
+  const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
+  const [powerSaver, setPowerSaver] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [streak, setStreak] = useState<number | null>(null);
-  const [forecastDays, setForecastDays] = useState<number | null>(null);
-  const [pulse, setPulse] = useState<Pulse | null>(null);
-  const [nudge, setNudge] = useState<Nudge | null>(null);
-  const [dismissingNudge, setDismissingNudge] = useState(false);
-  const [fixingNudge, setFixingNudge] = useState(false);
 
-  const load = async () => {
-    setLoadError(null);
+  const load = useCallback(async () => {
+    setDevice(scanLocalDevice());
     try {
-      const h = await api.health();
-      setHealth(h);
-    } catch (e) {
-      setLoadError(e instanceof Error ? e.message : 'Unable to load DevicePulse.');
-      return;
+      const power = await Battery.getPowerStateAsync();
+      setBatteryLevel(power.batteryLevel >= 0 ? Math.round(power.batteryLevel * 100) : null);
+      setPowerSaver(power.lowPowerMode);
+    } catch {
+      setBatteryLevel(null);
     }
-    try {
-      const [s, f, p, n] = await Promise.all([api.streak(), api.forecast(), api.pulseDaily(), api.activeNudge()]);
-      setStreak(s.current_streak_weeks);
-      setForecastDays(f.days_until_full);
-      setPulse(p);
-      setNudge(n);
-    } catch (e) { console.log(e); }
-  };
+  }, []);
 
-  const onDismissNudge = async () => {
-    if (!nudge || dismissingNudge) return;
-    const dismissedType = nudge.type;
-    setNudge(null); // optimistic — a Smart Nudge should disappear the moment you dismiss it
-    setDismissingNudge(true);
-    try {
-      await api.dismissNudge(dismissedType);
-    } catch (e) {
-      console.log(e);
-    } finally {
-      setDismissingNudge(false);
-    }
-  };
-
-  // Predictive Storage's "one-tap fix": tapping the storage_forecast nudge
-  // runs the fix immediately instead of just navigating to the Forecast
-  // screen — that's what makes it genuinely one tap.
-  const onNudgePress = async () => {
-    if (!nudge) return;
-    if (nudge.type !== 'storage_forecast') {
-      router.push(nudge.cta_route as any);
-      return;
-    }
-    if (fixingNudge) return;
-    setFixingNudge(true);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    try {
-      const result = await api.forecastQuickFix();
-      setNudge(null);
-      if (result?.forecast?.days_until_full != null) setForecastDays(result.forecast.days_until_full);
-    } catch (e) {
-      console.log(e);
-    } finally {
-      setFixingNudge(false);
-    }
-  };
-
-  const loadRecs = async (h: Health) => {
-    try {
-      setLoadingRecs(true);
-      const r = await api.recommendations({
-        health_score: h.score,
-        storage_used_pct: (h.storage_used_gb / h.storage_total_gb) * 100,
-        battery_health_pct: h.battery_health_pct,
-        duplicates_mb: 480,
-        junk_mb: 890,
-        threats: h.issues_found,
-        platform: 'android',
-      });
-      setRecs(r);
-    } catch (e) { console.log(e); }
-    finally { setLoadingRecs(false); }
-  };
-
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
   useEffect(() => {
-    if (justLoggedIn) {
-      const t = setTimeout(() => clearJustLoggedIn(), 5000);
-      return () => clearTimeout(t);
-    }
+    if (!justLoggedIn) return;
+    const timer = setTimeout(clearJustLoggedIn, 5000);
+    return () => clearTimeout(timer);
   }, [clearJustLoggedIn, justLoggedIn]);
-  useFocusEffect(React.useCallback(() => {
-    Promise.all([api.streak(), api.forecast(), api.pulseDaily(), api.activeNudge()]).then(([s, f, p, n]) => {
-      setStreak(s.current_streak_weeks);
-      setForecastDays(f.days_until_full);
-      setPulse(p);
-      setNudge(n);
-    }).catch(() => {});
-  }, []));
-  useEffect(() => {
-    if (health && !recs) loadRecs(health);
-    // Loading is intentionally keyed to the health snapshot; including recs
-    // would retrigger after the response and make the effect harder to reason about.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [health]);
 
   const onRefresh = async () => {
     setRefreshing(true);
     await load();
-    if (health) await loadRecs(health);
     setRefreshing(false);
   };
 
-  const onSmartScan = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push('/smart-scan');
-  };
-
-  if (!health) {
-    return (
-      <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
-        {loadError ? (
-          <View style={styles.errorState}>
-            <Ionicons name="cloud-offline-outline" size={42} color={theme.color.warning} />
-            <Text style={styles.errorTitle}>Can&apos;t reach DevicePulse</Text>
-            <Text style={styles.errorBody}>{loadError}</Text>
-            <Pressable style={styles.retryButton} onPress={load} testID="home-retry-button">
-              <Text style={styles.retryButtonText}>Try again</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <ActivityIndicator color={theme.color.brand} />
-        )}
-      </View>
-    );
+  if (!device) {
+    return <View style={[styles.container, styles.center]}><ActivityIndicator color={theme.color.brand} /></View>;
   }
 
-  const storagePct = Math.round((health.storage_used_gb / health.storage_total_gb) * 100);
-  const stats = [
-    { label: 'Storage', value: `${storagePct}%`, sub: `${health.storage_used_gb.toFixed(1)} / ${health.storage_total_gb} GB`, icon: 'server-outline' as const, color: theme.color.info, route: '/insights' },
-    { label: 'Memory', value: `${health.ram_used_pct}%`, sub: 'RAM in use', icon: 'hardware-chip-outline' as const, color: '#8B5CF6', route: null },
-    { label: 'Battery', value: `${health.battery_pct}%`, sub: `${health.battery_health_pct}% health`, icon: 'battery-half-outline' as const, color: theme.color.warning, route: '/insights' },
-    { label: 'Security', value: 'Safe', sub: health.security_status, icon: 'shield-checkmark-outline' as const, color: theme.color.brand, route: '/insights' },
-  ];
+  const storagePct = device.storage_total_mb > 0 ? Math.round((device.storage_used_mb / device.storage_total_mb) * 100) : 0;
+  const score = device.health_before;
+  const status = statusFor(score);
+
+  const onSmartScan = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    router.push('/smart-scan');
+  };
 
   return (
     <View style={styles.container} testID="home-screen">
       <LinearGradient colors={['#050F14', '#0B1B24']} style={StyleSheet.absoluteFill} />
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-        <ScrollView
-          contentContainerStyle={{ paddingBottom: 140 }}
-          showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.color.brand} />}
-        >
-          {/* Header */}
+        <ScrollView contentContainerStyle={{ paddingBottom: 140 }} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.color.brand} />}>
           <View style={styles.header}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View style={styles.brandRow}>
               <VLogo size={38} glow={false} />
               <View>
                 <Text style={styles.hello}>DevicePulse</Text>
-                <Text style={styles.subHello}>{health.status}</Text>
+                <Text style={styles.subHello}>{status}</Text>
               </View>
             </View>
             <Pressable onPress={() => router.push('/paywall')} testID="header-pro-button">
@@ -221,229 +91,118 @@ export default function Home() {
             </Pressable>
           </View>
 
-          {/* Daily Pulse Check — one-glance morning score, the daily ritual hook */}
-          {pulse && (
-            <Animated.View entering={FadeInDown}>
-              <Pressable style={styles.pulseCard} onPress={() => router.push('/trends')} testID="home-pulse-card">
-                <View style={styles.pulseIconWrap}>
-                  <Ionicons name="checkmark-circle" size={22} color={theme.color.brand} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={styles.pulseTitle}>Today&apos;s Pulse Check</Text>
-                    {pulse.delta !== 0 && (
-                      <View style={[styles.pulseDeltaPill, { backgroundColor: (pulse.delta > 0 ? theme.color.success : theme.color.error) + '22' }]}>
-                        <Ionicons
-                          name={pulse.delta > 0 ? 'arrow-up' : 'arrow-down'}
-                          size={10}
-                          color={pulse.delta > 0 ? theme.color.success : theme.color.error}
-                        />
-                        <Text style={[styles.pulseDeltaText, { color: pulse.delta > 0 ? theme.color.success : theme.color.error }]}>
-                          {Math.abs(pulse.delta)}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text style={styles.pulseHeadline} numberOfLines={2}>{pulse.headline}</Text>
-                </View>
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={styles.pulseScore}>{pulse.score}</Text>
-                  <Text style={styles.pulseScoreLabel}>{pulse.status}</Text>
-                </View>
-              </Pressable>
-            </Animated.View>
-          )}
+          <Animated.View entering={FadeInDown}>
+            <View style={styles.pulseCard}>
+              <View style={styles.pulseIconWrap}><Ionicons name="server-outline" size={22} color={theme.color.brand} /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.pulseTitle}>Live Storage Check</Text>
+                <Text style={styles.pulseHeadline}>{formatMb(device.storage_free_mb)} free on this device</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={styles.pulseScore}>{score}</Text>
+                <Text style={styles.pulseScoreLabel}>Storage score</Text>
+              </View>
+            </View>
+          </Animated.View>
 
-          {/* Welcome back banner */}
           {justLoggedIn && user && (
             <Animated.View entering={FadeInDown} style={styles.welcomeBanner} testID="welcome-banner">
-              <View style={styles.welcomeIcon}>
-                <Ionicons name="hand-right" size={18} color={theme.color.brand} />
-              </View>
+              <View style={styles.welcomeIcon}><Ionicons name="hand-right" size={18} color={theme.color.brand} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.welcomeTitle}>Welcome back, {user.name?.split(' ')[0] || 'there'}!</Text>
-                <Text style={styles.welcomeBody}>
-                  {streak != null && streak > 0 ? `🔥 You're on a ${streak}-week streak — keep it going.` : 'Run a Smart Scan to start your streak.'}
-                </Text>
+                <Text style={styles.welcomeBody}>Your live device readings are ready.</Text>
               </View>
-              <Pressable onPress={clearJustLoggedIn} hitSlop={8} testID="welcome-dismiss">
-                <Ionicons name="close" size={18} color={theme.color.onSurface3} />
-              </Pressable>
+              <Pressable onPress={clearJustLoggedIn} hitSlop={8}><Ionicons name="close" size={18} color={theme.color.onSurface3} /></Pressable>
             </Animated.View>
           )}
 
-          {/* Hero Ring */}
           <GlassCard style={styles.hero} testID="home-hero-card">
             <View style={{ alignItems: 'center' }}>
-              <Pressable onPress={() => router.push('/trends')} testID="home-health-ring-btn">
-                <HealthRing score={health.score} testID="home-health-ring" />
-              </Pressable>
-              <Text style={styles.heroSubtitle}>
-                {health.issues_found} items can be optimized
-              </Text>
+              <HealthRing score={score} testID="home-health-ring" />
+              <Text style={styles.heroSubtitle}>Score based on real free storage</Text>
               <Pressable style={styles.scanBtn} onPress={onSmartScan} testID="smart-scan-button">
                 <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
                 <Ionicons name="scan" size={20} color={theme.color.onBrand} />
-                <Text style={styles.scanBtnText}>Run Smart Scan</Text>
+                <Text style={styles.scanBtnText}>Run Storage Check</Text>
               </Pressable>
             </View>
           </GlassCard>
 
-          {/* Smart Nudge — surfaced by the backend only when it actually
-              matters (never more than one at a time), not on every open */}
-          {nudge && (
-            <Animated.View entering={FadeInDown}>
-              <Pressable
-                style={styles.reminderBanner}
-                onPress={onNudgePress}
-                disabled={fixingNudge}
-                testID="home-nudge-banner"
-              >
-                <View style={styles.reminderIcon}>
-                  {fixingNudge ? (
-                    <ActivityIndicator size="small" color={theme.color.warning} />
-                  ) : (
-                    <Ionicons name="notifications" size={18} color={theme.color.warning} />
-                  )}
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.reminderTitle}>{nudge.title}</Text>
-                  <Text style={styles.reminderBody}>
-                    {fixingNudge ? 'Fixing now…' : nudge.message}
-                  </Text>
-                </View>
-                <Pressable onPress={onDismissNudge} hitSlop={10} testID="home-nudge-dismiss">
-                  <Ionicons name="close" size={18} color={theme.color.onSurface3} />
-                </Pressable>
-              </Pressable>
-            </Animated.View>
+          {storagePct >= 85 && (
+            <Pressable style={styles.notice} onPress={() => router.push('/(tabs)/insights')}>
+              <Ionicons name="warning-outline" size={20} color={theme.color.warning} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.noticeTitle}>Storage is {storagePct}% full</Text>
+                <Text style={styles.noticeBody}>Review files with Android&apos;s protected storage manager.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={theme.color.onSurface3} />
+            </Pressable>
           )}
 
-          {/* Quick access: Streak + Forecast */}
-          <View style={styles.quickRow}>
-            <Pressable style={styles.quickCard} onPress={() => router.push('/streak')} testID="home-streak-card">
-              <View style={[styles.quickIcon, { backgroundColor: '#F59E0B22' }]}>
-                <Ionicons name="flame" size={20} color={theme.color.warning} />
-              </View>
-              <Text style={styles.quickLabel}>Streak</Text>
-              <Text style={styles.quickValue}>{streak != null ? `${streak}wk` : '—'}</Text>
-            </Pressable>
-            <Pressable style={styles.quickCard} onPress={() => router.push('/forecast')} testID="home-forecast-card">
-              <View style={[styles.quickIcon, { backgroundColor: theme.color.info + '22' }]}>
-                <Ionicons name="trending-up" size={20} color={theme.color.info} />
-              </View>
-              <Text style={styles.quickLabel}>Until full</Text>
-              <Text style={styles.quickValue}>{forecastDays != null ? `${forecastDays}d` : '—'}</Text>
-            </Pressable>
-          </View>
-
-          {/* Stat grid */}
           <View style={styles.statGrid}>
-            {stats.map((s) => (
-              <Pressable
-                key={s.label}
-                style={styles.statCard}
-                onPress={() => s.route && router.push(s.route as any)}
-                testID={`stat-card-${s.label.toLowerCase()}`}
-              >
-                <View style={[styles.statIcon, { backgroundColor: s.color + '22' }]}>
-                  <Ionicons name={s.icon} size={20} color={s.color} />
-                </View>
-                <Text style={styles.statValue}>{s.value}</Text>
-                <Text style={styles.statLabel}>{s.label}</Text>
-                <Text style={styles.statSub}>{s.sub}</Text>
-              </Pressable>
-            ))}
+            <StatCard label="Storage" value={`${storagePct}%`} sub={`${formatMb(device.storage_free_mb)} free`} icon="server-outline" color={theme.color.info} onPress={() => router.push('/(tabs)/insights')} />
+            <StatCard label="Battery" value={batteryLevel == null ? '—' : `${batteryLevel}%`} sub={powerSaver ? 'Power saver on' : 'Live reading'} icon="battery-half-outline" color={theme.color.warning} onPress={() => router.push('/(tabs)/insights')} />
+            <StatCard label="App cache" value={formatMb(device.cache_mb)} sub="DevicePulse only" icon="flash-outline" color={theme.color.brand} onPress={onSmartScan} />
+            <StatCard label="Security" value="Review" sub="Android settings" icon="shield-checkmark-outline" color={theme.color.brand} onPress={() => router.push('/(tabs)/insights')} />
           </View>
 
-          {/* AI Recommendations */}
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>AI Recommendations</Text>
-            <View style={styles.aiTag}>
-              <Ionicons name="sparkles" size={11} color={theme.color.brand} />
-              <Text style={styles.aiTagText}>Claude Sonnet</Text>
+          <View style={styles.transparencyCard}>
+            <Ionicons name="lock-closed" size={22} color={theme.color.brand} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.transparencyTitle}>Truthful by design</Text>
+              <Text style={styles.transparencyBody}>DevicePulse reports measurements it can verify and sends protected actions to Android for your approval.</Text>
             </View>
           </View>
-
-          {loadingRecs && !recs && (
-            <View style={{ paddingVertical: 20, alignItems: 'center' }}>
-              <ActivityIndicator color={theme.color.brand} />
-              <Text style={{ color: theme.color.onSurface2, marginTop: 8, fontSize: 12 }}>Analyzing your device…</Text>
-            </View>
-          )}
-
-          {recs?.map((r, i) => (
-            <GlassCard key={i} style={styles.recCard} testID={`recommendation-${i}`}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <View style={[styles.impactDot, {
-                  backgroundColor: r.impact === 'high' ? theme.color.brand : r.impact === 'medium' ? theme.color.warning : theme.color.info,
-                }]} />
-                <Text style={styles.recTitle}>{r.title}</Text>
-              </View>
-              <Text style={styles.recBody}>{r.description}</Text>
-            </GlassCard>
-          ))}
         </ScrollView>
       </SafeAreaView>
     </View>
   );
 }
 
+function StatCard({ label, value, sub, icon, color, onPress }: { label: string; value: string; sub: string; icon: keyof typeof Ionicons.glyphMap; color: string; onPress: () => void }) {
+  return (
+    <Pressable style={styles.statCard} onPress={onPress}>
+      <View style={[styles.statIcon, { backgroundColor: color + '22' }]}><Ionicons name={icon} size={20} color={color} /></View>
+      <Text style={styles.statValue}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+      <Text style={styles.statSub}>{sub}</Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.color.surface },
+  center: { alignItems: 'center', justifyContent: 'center' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: theme.space.lg, paddingTop: theme.space.md, paddingBottom: theme.space.md },
+  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   hello: { color: theme.color.onSurface, fontSize: 18, fontWeight: '700' },
   subHello: { color: theme.color.onSurface2, fontSize: 12 },
   proBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderRadius: theme.radius.pill },
   proBadgeText: { color: theme.color.onBrand, fontSize: 12, fontWeight: '700' },
-  hero: { marginHorizontal: theme.space.lg, marginTop: theme.space.sm, paddingVertical: theme.space.xl },
-  heroSubtitle: { color: theme.color.onSurface2, fontSize: 13, marginTop: theme.space.md },
-  scanBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    marginTop: theme.space.lg, paddingHorizontal: 28, paddingVertical: 14, borderRadius: theme.radius.pill, overflow: 'hidden',
-  },
-  scanBtnText: { color: theme.color.onBrand, fontSize: 15, fontWeight: '700' },
-  statGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: theme.space.md, marginTop: theme.space.md, gap: theme.space.sm },
-  statCard: {
-    width: '48%', backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg,
-    padding: theme.space.lg, borderWidth: 1, borderColor: theme.color.border,
-  },
-  statIcon: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
-  statValue: { color: theme.color.onSurface, fontSize: 22, fontWeight: '800', letterSpacing: -0.5 },
-  statLabel: { color: theme.color.onSurface, fontSize: 13, fontWeight: '600', marginTop: 2 },
-  statSub: { color: theme.color.onSurface3, fontSize: 11, marginTop: 2 },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: theme.space.lg, marginTop: theme.space.xl, marginBottom: theme.space.sm },
-  sectionTitle: { color: theme.color.onSurface, fontSize: 16, fontWeight: '700' },
-  aiTag: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: theme.color.brand3, paddingHorizontal: 8, paddingVertical: 4, borderRadius: theme.radius.pill },
-  aiTagText: { color: theme.color.brand, fontSize: 10, fontWeight: '700' },
-  recCard: { marginHorizontal: theme.space.lg, marginTop: theme.space.sm },
-  recTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700', flex: 1 },
-  recBody: { color: theme.color.onSurface2, fontSize: 13, marginTop: 6, lineHeight: 19 },
-  impactDot: { width: 8, height: 8, borderRadius: 4 },
-  reminderBanner: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: theme.space.lg, marginTop: theme.space.md, padding: theme.space.md, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.warning + '55' },
-  reminderIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: theme.color.warning + '22', alignItems: 'center', justifyContent: 'center' },
-  reminderTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
-  reminderBody: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
-  quickRow: { flexDirection: 'row', gap: theme.space.sm, paddingHorizontal: theme.space.lg, marginTop: theme.space.md },
-  quickCard: { flex: 1, backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.md, borderWidth: 1, borderColor: theme.color.border, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  quickIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  quickLabel: { color: theme.color.onSurface2, fontSize: 13, flex: 1 },
-  quickValue: { color: theme.color.onSurface, fontSize: 18, fontWeight: '800' },
   pulseCard: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: theme.space.lg, marginBottom: theme.space.sm, padding: theme.space.md, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.border },
-  pulseIconWrap: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(16,185,129,0.12)', alignItems: 'center', justifyContent: 'center' },
+  pulseIconWrap: { width: 36, height: 36, borderRadius: 10, backgroundColor: theme.color.brand3, alignItems: 'center', justifyContent: 'center' },
   pulseTitle: { color: theme.color.onSurface, fontSize: 13, fontWeight: '700' },
   pulseHeadline: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
   pulseScore: { color: theme.color.onSurface, fontSize: 20, fontWeight: '800' },
   pulseScoreLabel: { color: theme.color.onSurface3, fontSize: 10, marginTop: 1 },
-  pulseDeltaPill: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 6, paddingVertical: 2, borderRadius: theme.radius.pill },
-  pulseDeltaText: { fontSize: 10, fontWeight: '700' },
   welcomeBanner: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: theme.space.lg, marginBottom: theme.space.sm, padding: theme.space.md, backgroundColor: theme.color.brand3, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.brand + '55' },
   welcomeIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(16,185,129,0.18)', alignItems: 'center', justifyContent: 'center' },
   welcomeTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
   welcomeBody: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
-  errorState: { alignItems: 'center', paddingHorizontal: theme.space.xl, maxWidth: 420 },
-  errorTitle: { color: theme.color.onSurface, fontSize: 18, fontWeight: '700', marginTop: theme.space.md },
-  errorBody: { color: theme.color.onSurface2, fontSize: 13, lineHeight: 19, marginTop: theme.space.sm, textAlign: 'center' },
-  retryButton: { backgroundColor: theme.color.brand, borderRadius: theme.radius.pill, marginTop: theme.space.lg, paddingHorizontal: 24, paddingVertical: 12 },
-  retryButtonText: { color: theme.color.onBrand, fontSize: 14, fontWeight: '700' },
+  hero: { marginHorizontal: theme.space.lg, marginTop: theme.space.sm, paddingVertical: theme.space.xl },
+  heroSubtitle: { color: theme.color.onSurface2, fontSize: 13, marginTop: theme.space.md },
+  scanBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: theme.space.lg, paddingHorizontal: 28, paddingVertical: 14, borderRadius: theme.radius.pill, overflow: 'hidden' },
+  scanBtnText: { color: theme.color.onBrand, fontSize: 15, fontWeight: '700' },
+  notice: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: theme.space.lg, marginTop: theme.space.md, padding: theme.space.md, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.warning + '66' },
+  noticeTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
+  noticeBody: { color: theme.color.onSurface2, fontSize: 12, marginTop: 2 },
+  statGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: theme.space.md, marginTop: theme.space.md, gap: theme.space.sm },
+  statCard: { width: '48%', backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg, padding: theme.space.lg, borderWidth: 1, borderColor: theme.color.border },
+  statIcon: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
+  statValue: { color: theme.color.onSurface, fontSize: 22, fontWeight: '800', letterSpacing: -0.5 },
+  statLabel: { color: theme.color.onSurface, fontSize: 13, fontWeight: '600', marginTop: 2 },
+  statSub: { color: theme.color.onSurface3, fontSize: 11, marginTop: 2 },
+  transparencyCard: { flexDirection: 'row', gap: 12, marginHorizontal: theme.space.lg, marginTop: theme.space.xl, backgroundColor: theme.color.brand3, borderRadius: theme.radius.lg, padding: theme.space.lg },
+  transparencyTitle: { color: theme.color.onSurface, fontSize: 14, fontWeight: '700' },
+  transparencyBody: { color: theme.color.onSurface2, fontSize: 12, lineHeight: 18, marginTop: 3 },
 });
