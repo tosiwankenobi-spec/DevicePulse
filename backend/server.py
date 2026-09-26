@@ -92,6 +92,12 @@ async def get_current_user(authorization: Optional[str] = Header(default=None)):
     return user
 
 
+def require_pro(user: dict) -> None:
+    """Enforce paid access from the server's verified entitlement state."""
+    if not user.get("is_pro", False):
+        raise HTTPException(status_code=403, detail="DevicePulse Pro is required")
+
+
 # ==================== Models ====================
 class DeviceHealth(BaseModel):
     score: int
@@ -777,6 +783,7 @@ async def run_clean(req: CleanupRequest, user=Depends(get_current_user)):
 
 @api_router.get("/history", response_model=List[HistoryEntry])
 async def get_history(user=Depends(get_current_user)):
+    require_pro(user)
     device_id = user["user_id"]
     docs = await db.cleanups.find({"device_id": device_id}).sort("completed_at", -1).to_list(100)
     return [
@@ -791,6 +798,7 @@ async def get_history(user=Depends(get_current_user)):
 
 @api_router.get("/history/summary")
 async def get_history_summary(user=Depends(get_current_user)):
+    require_pro(user)
     device_id = user["user_id"]
     docs = await db.cleanups.find({"device_id": device_id}).to_list(1000)
     total_reclaimed = sum(d.get("reclaimed_mb", 0.0) for d in docs)
@@ -1334,6 +1342,7 @@ async def get_family_group(user=Depends(get_current_user)):
     every user in their own solo group, which would then block them from
     joining someone else's family without first "leaving" a group they never
     knew they had. POST /family/create is the explicit action instead."""
+    require_pro(user)
     user_id = user["user_id"]
     membership = await db.family_memberships.find_one({"user_id": user_id})
     if not membership:
@@ -1350,6 +1359,7 @@ async def get_family_group(user=Depends(get_current_user)):
 
 @api_router.post("/family/create", response_model=FamilyGroup)
 async def create_family_group(user=Depends(get_current_user)):
+    require_pro(user)
     user_id = user["user_id"]
     if await db.family_memberships.find_one({"user_id": user_id}):
         raise HTTPException(400, "You're already in a family plan")
@@ -1373,6 +1383,7 @@ async def create_family_group(user=Depends(get_current_user)):
 
 @api_router.post("/family/join", response_model=FamilyGroup)
 async def join_family(req: JoinFamilyRequest, user=Depends(get_current_user)):
+    require_pro(user)
     user_id = user["user_id"]
     existing = await db.family_memberships.find_one({"user_id": user_id})
     if existing:
@@ -1421,6 +1432,7 @@ async def family_remote_clean(member_user_id: str, user=Depends(get_current_user
     immediate simulated cleanup on a member's actual account (same
     reclaimable estimate Smart Nudges/Predictive Storage use), and the
     member gets a push notification about it."""
+    require_pro(user)
     user_id = user["user_id"]
     membership = await db.family_memberships.find_one({"user_id": user_id})
     if not membership or membership["role"] != "owner":
@@ -1526,6 +1538,7 @@ def _report_public_view(doc: dict) -> CleanupReport:
 
 @api_router.get("/reports/mine", response_model=Optional[CleanupReport])
 async def get_my_latest_report(user=Depends(get_current_user)):
+    require_pro(user)
     docs = await db.cleanup_reports.find(
         {"user_id": user["user_id"]}, {"_id": 0}
     ).sort("generated_at", -1).to_list(1)
@@ -1536,6 +1549,7 @@ async def get_my_latest_report(user=Depends(get_current_user)):
 
 @api_router.post("/reports/generate", response_model=CleanupReport)
 async def generate_cleanup_report(user=Depends(get_current_user)):
+    require_pro(user)
     doc = await _build_cleanup_report(user)
     await db.cleanup_reports.insert_one(doc.copy())
     return _report_public_view(doc)
@@ -2677,6 +2691,7 @@ async def coach_daily(user=Depends(get_current_user)):
 
 @api_router.get("/coach/history", response_model=List[CoachMessage])
 async def coach_history(user=Depends(get_current_user)):
+    require_pro(user)
     user_id = user["user_id"]
     docs = await db.coach_messages.find({"user_id": user_id}).sort("created_at", 1).to_list(200)
     return [CoachMessage(role=d["role"], content=d["content"], created_at=d["created_at"]) for d in docs]
@@ -2690,6 +2705,7 @@ async def coach_clear(user=Depends(get_current_user)):
 
 @api_router.post("/coach/chat", response_model=CoachMessage)
 async def coach_chat(req: CoachChatRequest, request: Request, user=Depends(get_current_user)):
+    require_pro(user)
     client_key = user["user_id"]
     if not _allow_ai_call(client_key):
         raise HTTPException(429, "Too many messages. Please wait a moment and try again.")

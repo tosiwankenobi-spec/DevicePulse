@@ -8,15 +8,21 @@ import { Image } from 'expo-image';
 import { VLogo } from '@/src/components/VLogo';
 import { useAuth } from '@/src/AuthContext';
 import { api } from '@/src/api';
+import { useSubscription } from '@/src/lib/revenuecat';
 import { theme } from '@/src/theme';
 
 export default function Settings() {
   const router = useRouter();
   const { user, logout } = useAuth();
+  const { isSubscribed } = useSubscription();
   const [haptics, setHaptics] = React.useState(true);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
   const [pushMsg, setPushMsg] = React.useState('');
+
+  const openProFeature = (route: '/family' | '/history' | '/cleanup-report') => {
+    router.push(isSubscribed ? route : '/paywall');
+  };
 
   const onLogout = async () => {
     await logout();
@@ -74,14 +80,14 @@ export default function Settings() {
                   <Ionicons name="sparkles" size={11} color={theme.color.onBrand} />
                   <Text style={styles.proTagText}>DEVICEPULSE PRO</Text>
                 </View>
-                <Text style={styles.proTitle}>Unlock DevicePulse Pro</Text>
-                <Text style={styles.proBody}>Family sync, extended history, reminders and priority support.</Text>
+                <Text style={styles.proTitle}>{isSubscribed ? 'DevicePulse Pro is active' : 'Unlock DevicePulse Pro'}</Text>
+                <Text style={styles.proBody}>AI guidance, family tools, complete history and shareable reports.</Text>
               </View>
               <Ionicons name="arrow-forward-circle" size={36} color={theme.color.onBrand} />
             </LinearGradient>
           </Pressable>
 
-          <Pressable style={styles.familyRow} onPress={() => router.push('/family')} testID="settings-family">
+          <Pressable style={styles.familyRow} onPress={() => openProFeature('/family')} testID="settings-family">
             <View style={styles.rowIcon}>
               <Ionicons name="people-outline" size={20} color={theme.color.brand} />
             </View>
@@ -97,11 +103,11 @@ export default function Settings() {
           <View style={styles.card}>
             <NavRow icon="flame-outline" label="Storage-check streak" onPress={() => router.push('/streak')} testID="settings-streak" />
             <Divider />
-            <NavRow icon="time-outline" label="Verified cleanup history" onPress={() => router.push('/history')} testID="settings-history" />
+            <NavRow icon="time-outline" label="Verified cleanup history" badge="Pro" onPress={() => openProFeature('/history')} testID="settings-history" />
             <Divider />
             <NavRow icon="gift-outline" label="Refer a friend" badge="Free Pro" onPress={() => router.push('/referral')} testID="settings-referral" />
             <Divider />
-            <NavRow icon="share-social-outline" label="Verified cleanup report" onPress={() => router.push('/cleanup-report')} testID="settings-cleanup-report" />
+            <NavRow icon="share-social-outline" label="Verified cleanup report" badge="Pro" onPress={() => openProFeature('/cleanup-report')} testID="settings-cleanup-report" />
           </View>
 
           <Text style={styles.section}>Preferences</Text>
@@ -144,7 +150,7 @@ export default function Settings() {
 
           <View style={styles.footer}>
             <VLogo size={40} />
-            <Text style={styles.footerBrand}>DevicePulse v1.0.2</Text>
+            <Text style={styles.footerBrand}>DevicePulse v1.0.3</Text>
             <Text style={styles.footerCorp}>© Verolane Digital Solutions</Text>
           </View>
         </ScrollView>

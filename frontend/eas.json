@@ -11,7 +11,8 @@
     "preview": {
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://devicepulse-api.onrender.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://devicepulse-api.onrender.com",
+        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_LatRoInmgtrXQsLlKLVmqrpvEdq"
       },
       "android": {
         "buildType": "apk"
@@ -20,7 +21,8 @@
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://devicepulse-api.onrender.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://devicepulse-api.onrender.com",
+        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_LatRoInmgtrXQsLlKLVmqrpvEdq"
       },
       "android": {
         "buildType": "app-bundle"

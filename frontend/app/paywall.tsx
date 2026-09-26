@@ -9,12 +9,10 @@ import { useSubscription } from '@/src/lib/revenuecat';
 import { theme } from '@/src/theme';
 
 const FEATURES = [
-  { icon: 'chatbubbles', label: 'Full AI Coach conversations' },
-  { icon: 'people', label: 'Family device dashboard' },
-  { icon: 'time', label: 'Extended history and reports' },
-  { icon: 'notifications', label: 'Advanced reminder controls' },
-  { icon: 'sync', label: 'Cross-device account sync' },
-  { icon: 'shield-checkmark', label: 'Privacy-first guidance' },
+  { icon: 'chatbubbles', label: 'Full AI Device Guide conversations' },
+  { icon: 'people', label: 'Family account dashboard' },
+  { icon: 'time', label: 'Complete cleanup history' },
+  { icon: 'share-social', label: 'Shareable cleanup reports' },
 ] as const;
 
 export default function Paywall() {
@@ -77,7 +75,7 @@ export default function Paywall() {
               <Text style={styles.proBadgeText}>DEVICEPULSE PRO</Text>
             </View>
             <Text style={styles.heroTitle}>More guidance.{ '\n' }More continuity.</Text>
-            <Text style={styles.heroSub}>Unlock coaching, family tools and extended progress history.</Text>
+            <Text style={styles.heroSub}>Unlock AI guidance, family tools, complete history and shareable progress reports.</Text>
           </View>
         </View>
 
