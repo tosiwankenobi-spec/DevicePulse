@@ -2,7 +2,7 @@
   "expo": {
     "name": "DevicePulse",
     "slug": "devicepulse",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "devicepulse",
@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "ca.verolane.devicepulse",
-      "buildNumber": "5"
+      "buildNumber": "6"
     },
     "android": {
       "adaptiveIcon": {
@@ -20,7 +20,7 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "ca.verolane.devicepulse",
-      "versionCode": 6
+      "versionCode": 7
     },
     "web": {
       "bundler": "metro",

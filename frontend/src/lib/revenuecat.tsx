@@ -1,10 +1,11 @@
-import React, { createContext, useContext, useEffect } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import Purchases, { LOG_LEVEL } from "react-native-purchases";
 import type { CustomerInfo, PurchasesPackage } from "react-native-purchases";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { scheduleTrialReminder } from "../trialReminder";
 import { api } from "../api";
+import { useAuth } from "../AuthContext";
 
 const REVENUECAT_TEST_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY;
 const REVENUECAT_IOS_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
@@ -35,6 +36,9 @@ export function initializeRevenueCat() {
 
 function useSubscriptionContext() {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const revenueCatUserRef = useRef<string | null>(null);
+  const [identityError, setIdentityError] = useState(false);
 
   const customerInfoQuery = useQuery({
     queryKey: ["revenuecat", "customer-info"],
@@ -58,6 +62,39 @@ function useSubscriptionContext() {
     return () => { Purchases.removeCustomerInfoUpdateListener(listener); };
   }, [queryClient]);
 
+  // RevenueCat starts with an anonymous customer. When app authentication
+  // finishes, bind that customer to the real app user and immediately replace
+  // the cached anonymous CustomerInfo. Without this cache update the paywall
+  // can stay disabled even though Purchases.logIn() succeeded.
+  useEffect(() => {
+    if (!rcEnabled) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setIdentityError(false);
+        if (user?.user_id && revenueCatUserRef.current !== user.user_id) {
+          const { customerInfo } = await Purchases.logIn(user.user_id);
+          if (cancelled) return;
+          revenueCatUserRef.current = user.user_id;
+          queryClient.setQueryData(["revenuecat", "customer-info"], customerInfo);
+        } else if (!user?.user_id && revenueCatUserRef.current) {
+          const customerInfo = await Purchases.logOut();
+          if (cancelled) return;
+          revenueCatUserRef.current = null;
+          queryClient.setQueryData(["revenuecat", "customer-info"], customerInfo);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setIdentityError(true);
+          console.log("RevenueCat identity error", e);
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [queryClient, user?.user_id]);
+
   const purchaseMutation = useMutation({
     mutationFn: async (packageToPurchase: PurchasesPackage) => {
       const id = (await Purchases.getCustomerInfo()).originalAppUserId;
@@ -65,10 +102,16 @@ function useSubscriptionContext() {
       const { customerInfo } = await Purchases.purchasePackage(packageToPurchase);
       return customerInfo;
     },
+    onSuccess: (customerInfo) => {
+      queryClient.setQueryData(["revenuecat", "customer-info"], customerInfo);
+    },
   });
 
   const restoreMutation = useMutation({
     mutationFn: () => Purchases.restorePurchases(),
+    onSuccess: (customerInfo) => {
+      queryClient.setQueryData(["revenuecat", "customer-info"], customerInfo);
+    },
   });
 
   const isSubscribed =
@@ -103,6 +146,7 @@ function useSubscriptionContext() {
     offerings: offeringsQuery.data,
     isSubscribed,
     identityReady,
+    identityError,
     rcEnabled,
     isLoading: customerInfoQuery.isLoading || offeringsQuery.isLoading,
     purchase: purchaseMutation.mutateAsync,

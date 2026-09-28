@@ -17,7 +17,7 @@ const FEATURES = [
 
 export default function Paywall() {
   const router = useRouter();
-  const { offerings, isSubscribed, identityReady, isLoading, purchase, restore, isPurchasing, isRestoring } = useSubscription();
+  const { offerings, isSubscribed, identityReady, identityError, isLoading, purchase, restore, isPurchasing, isRestoring } = useSubscription();
   const packages = offerings?.current?.availablePackages ?? [];
   const [selected, setSelected] = useState(0);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -129,10 +129,26 @@ export default function Paywall() {
 
               {!!errMsg && <Text style={styles.errMsg} testID="paywall-error">{errMsg}</Text>}
 
+              {!identityReady && (
+                <Text style={styles.errMsg} testID="paywall-identity-status">
+                  {identityError
+                    ? 'Subscription sign-in could not be completed. Sign out, sign back in, and try again.'
+                    : 'Finishing secure subscription sign-in…'}
+                </Text>
+              )}
+
               <Pressable
-                style={[styles.cta, (!identityReady || isPurchasing) && { opacity: 0.5 }]}
-                onPress={() => setConfirmOpen(true)}
-                disabled={!identityReady || isPurchasing}
+                style={[styles.cta, isPurchasing && { opacity: 0.5 }]}
+                onPress={() => {
+                  if (!identityReady) {
+                    setErrMsg(identityError
+                      ? 'Subscription sign-in failed. Sign out, sign back in, and try again.'
+                      : 'Subscription sign-in is still finishing. Please try again in a moment.');
+                    return;
+                  }
+                  setConfirmOpen(true);
+                }}
+                disabled={isPurchasing}
                 testID="paywall-cta"
               >
                 <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
