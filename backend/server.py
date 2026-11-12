@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Header, Depends
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -13,7 +13,9 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
-from urllib.parse import quote
+
+from emergentintegrations.llm.chat import LlmChat, UserMessage
+
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -23,13 +25,7 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
-ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").lower()
-REVENUECAT_SECRET_API_KEY = os.environ.get("REVENUECAT_SECRET_API_KEY")
-REVENUECAT_ENTITLEMENT_ID = os.environ.get("REVENUECAT_ENTITLEMENT_ID", "pro")
-EMERGENT_AUTH_URL = os.environ.get(
-    "EMERGENT_AUTH_URL",
-    "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-)
+EMERGENT_AUTH_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 
 # ---------- Emergent managed push ----------
 PUSH_BASE_URL = "https://integrations.emergentagent.com"
@@ -62,6 +58,36 @@ async def send_push(recipients: List[str], data: dict, idempotency_key: Optional
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
+# Old server routes cannot inspect a customer's Android device. Leave them
+# unavailable instead of returning fabricated device readings or recording a
+# database-only operation as a real deletion. Account-session security routes
+# remain available because they inspect actual server sessions.
+UNSUPPORTED_DEVICE_PATHS = {
+    "/api/device/health", "/api/device/storage", "/api/device/scan", "/api/device/clean",
+    "/api/device/duplicates", "/api/device/duplicates/scan", "/api/device/duplicates/remove",
+    "/api/device/large-files", "/api/device/large-files/scan", "/api/device/large-files/delete",
+    "/api/device/battery", "/api/device/battery/optimize",
+    "/api/device/memory", "/api/device/memory/boost",
+    "/api/device/cache-breakdown", "/api/device/health-trend",
+    "/api/forecast", "/api/forecast/quick-fix", "/api/pulse/daily", "/api/widget/summary",
+    "/api/nudges/active", "/api/autoclean/run-if-due", "/api/autoclean/schedule",
+    "/api/history", "/api/history/summary", "/api/streak", "/api/streak/freeze",
+    "/api/push/cleanup-reminder", "/api/ai/recommendations",
+    "/api/referral", "/api/referral/invite", "/api/reminders",
+}
+
+UNSUPPORTED_DEVICE_PREFIXES = (
+    "/api/nudges/", "/api/reports/", "/r/", "/api/coach/", "/api/family/",
+)
+
+@app.middleware("http")
+async def reject_legacy_device_simulations(request: Request, call_next):
+    if request.url.path in UNSUPPORTED_DEVICE_PATHS or request.url.path.startswith(UNSUPPORTED_DEVICE_PREFIXES):
+        return JSONResponse(status_code=410, content={
+            "detail": "This legacy endpoint used simulated device data. Use the Android on-device scan instead."
+        })
+    return await call_next(request)
+
 
 # ==================== Auth Models & Helpers ====================
 class SessionRequest(BaseModel):
@@ -90,12 +116,6 @@ async def get_current_user(authorization: Optional[str] = Header(default=None)):
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
-
-
-def require_pro(user: dict) -> None:
-    """Enforce paid access from the server's verified entitlement state."""
-    if not user.get("is_pro", False):
-        raise HTTPException(status_code=403, detail="DevicePulse Pro is required")
 
 
 # ==================== Models ====================
@@ -292,9 +312,6 @@ class CleanupReport(BaseModel):
     current_streak_weeks: int
     top_category: Optional[str] = None
     days_until_full: int
-
-class EntitlementSync(BaseModel):
-    is_pro: bool
 
 class AutoCleanSchedule(BaseModel):
     enabled: bool = True
@@ -544,18 +561,7 @@ def _allow_ai_call(client_key: str) -> bool:
 # ==================== Routes ====================
 @api_router.get("/")
 async def root():
-    return {"app": "DevicePulse", "version": "1.0.1"}
-
-
-@api_router.get("/healthz")
-async def healthz():
-    """Deployment readiness probe: verifies the API process and database."""
-    try:
-        await db.command("ping")
-    except Exception as exc:
-        logging.error("Database readiness check failed: %s", exc)
-        raise HTTPException(status_code=503, detail="Database unavailable")
-    return {"status": "ok", "app": "DevicePulse", "version": "1.0.1"}
+    return {"app": "DevicePulse", "version": "1.0.0"}
 
 # ---------- Auth ----------
 @api_router.post("/auth/session")
@@ -760,7 +766,7 @@ async def run_scan():
         health_before=68,
         health_after=min(97, 68 + int(total / 120)),
     )
-    await db.scans.insert_one(result.model_dump())
+    await db.scans.insert_one(result.dict())
     return result
 
 @api_router.post("/device/clean")
@@ -783,7 +789,6 @@ async def run_clean(req: CleanupRequest, user=Depends(get_current_user)):
 
 @api_router.get("/history", response_model=List[HistoryEntry])
 async def get_history(user=Depends(get_current_user)):
-    require_pro(user)
     device_id = user["user_id"]
     docs = await db.cleanups.find({"device_id": device_id}).sort("completed_at", -1).to_list(100)
     return [
@@ -798,7 +803,6 @@ async def get_history(user=Depends(get_current_user)):
 
 @api_router.get("/history/summary")
 async def get_history_summary(user=Depends(get_current_user)):
-    require_pro(user)
     device_id = user["user_id"]
     docs = await db.cleanups.find({"device_id": device_id}).to_list(1000)
     total_reclaimed = sum(d.get("reclaimed_mb", 0.0) for d in docs)
@@ -852,7 +856,7 @@ async def get_reminders(user=Depends(get_current_user)):
     doc = await db.reminders.find_one({"device_id": device_id})
     if not doc:
         prefs = ReminderPrefs(device_id=device_id)
-        await db.reminders.insert_one(prefs.model_dump())
+        await db.reminders.insert_one(prefs.dict())
         return prefs
     return ReminderPrefs(
         device_id=device_id,
@@ -865,7 +869,7 @@ async def get_reminders(user=Depends(get_current_user)):
 @api_router.put("/reminders", response_model=ReminderPrefs)
 async def update_reminders(prefs: ReminderPrefs, user=Depends(get_current_user)):
     device_id = user["user_id"]
-    data = prefs.model_dump()
+    data = prefs.dict()
     data["device_id"] = device_id
     await db.reminders.update_one({"device_id": device_id}, {"$set": data}, upsert=True)
     return ReminderPrefs(**data)
@@ -1198,7 +1202,7 @@ async def pulse_daily(user=Depends(get_current_user)):
         battery_pct=seed.battery_pct,
         security_ok=security_ok,
     )
-    doc = card.model_dump()
+    doc = card.dict()
     doc["user_id"] = user_id
     await db.pulse_daily.insert_one(doc.copy())
     return card
@@ -1342,7 +1346,6 @@ async def get_family_group(user=Depends(get_current_user)):
     every user in their own solo group, which would then block them from
     joining someone else's family without first "leaving" a group they never
     knew they had. POST /family/create is the explicit action instead."""
-    require_pro(user)
     user_id = user["user_id"]
     membership = await db.family_memberships.find_one({"user_id": user_id})
     if not membership:
@@ -1359,7 +1362,6 @@ async def get_family_group(user=Depends(get_current_user)):
 
 @api_router.post("/family/create", response_model=FamilyGroup)
 async def create_family_group(user=Depends(get_current_user)):
-    require_pro(user)
     user_id = user["user_id"]
     if await db.family_memberships.find_one({"user_id": user_id}):
         raise HTTPException(400, "You're already in a family plan")
@@ -1383,7 +1385,6 @@ async def create_family_group(user=Depends(get_current_user)):
 
 @api_router.post("/family/join", response_model=FamilyGroup)
 async def join_family(req: JoinFamilyRequest, user=Depends(get_current_user)):
-    require_pro(user)
     user_id = user["user_id"]
     existing = await db.family_memberships.find_one({"user_id": user_id})
     if existing:
@@ -1432,7 +1433,6 @@ async def family_remote_clean(member_user_id: str, user=Depends(get_current_user
     immediate simulated cleanup on a member's actual account (same
     reclaimable estimate Smart Nudges/Predictive Storage use), and the
     member gets a push notification about it."""
-    require_pro(user)
     user_id = user["user_id"]
     membership = await db.family_memberships.find_one({"user_id": user_id})
     if not membership or membership["role"] != "owner":
@@ -1538,7 +1538,6 @@ def _report_public_view(doc: dict) -> CleanupReport:
 
 @api_router.get("/reports/mine", response_model=Optional[CleanupReport])
 async def get_my_latest_report(user=Depends(get_current_user)):
-    require_pro(user)
     docs = await db.cleanup_reports.find(
         {"user_id": user["user_id"]}, {"_id": 0}
     ).sort("generated_at", -1).to_list(1)
@@ -1549,7 +1548,6 @@ async def get_my_latest_report(user=Depends(get_current_user)):
 
 @api_router.post("/reports/generate", response_model=CleanupReport)
 async def generate_cleanup_report(user=Depends(get_current_user)):
-    require_pro(user)
     doc = await _build_cleanup_report(user)
     await db.cleanup_reports.insert_one(doc.copy())
     return _report_public_view(doc)
@@ -1692,53 +1690,225 @@ async def view_public_report_page(share_code: str):
     return HTMLResponse(content=page)
 
 
-# ==================== Entitlements (Pro) ====================
-# Production verifies the authenticated RevenueCat app-user ID server-side.
-# Local/test environments may still use client sync so the app can be
-# developed without storing a RevenueCat secret on a workstation.
+# ==================== Entitlements (Pro) — verified by RevenueCat ====================
+# Pro status is never self-reported by the client. It is written only by:
+#   1. POST /webhooks/revenuecat — RevenueCat's server calls this on every
+#      subscription lifecycle event (authenticated with a shared secret), and
+#   2. POST /entitlements/refresh — the server itself asks RevenueCat's REST API
+#      for the signed-in user's subscriber record (needs REVENUECAT_SECRET_API_KEY).
+# The app calls Purchases.logIn(user_id) on sign-in, so RevenueCat's app_user_id
+# for a signed-in customer is our user_id. Anonymous (signed-out) buyers are
+# verified on-device by the RevenueCat SDK; their purchase is aliased to the
+# account when they later sign in, and RevenueCat then sends a TRANSFER/refresh.
+import hmac as _hmac
+
+REVENUECAT_WEBHOOK_AUTH = os.environ.get("REVENUECAT_WEBHOOK_AUTH", "")
+REVENUECAT_SECRET_API_KEY = os.environ.get("REVENUECAT_SECRET_API_KEY", "")
+REVENUECAT_API_BASE = os.environ.get("REVENUECAT_API_BASE", "https://api.revenuecat.com").rstrip("/")
+PRO_ENTITLEMENT_ID = os.environ.get("REVENUECAT_ENTITLEMENT_ID", "pro")
+
+# Events after which the customer has (or keeps) access until expiration_at_ms.
+_RC_ACCESS_EVENTS = {
+    "INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION", "PRODUCT_CHANGE", "NON_RENEWING_PURCHASE",
+    "SUBSCRIPTION_EXTENDED", "TEMPORARY_ENTITLEMENT_GRANT", "CANCELLATION", "BILLING_ISSUE",
+    "SUBSCRIPTION_PAUSED",
+}
+
+
+def _ms_to_iso(ms) -> Optional[str]:
+    if ms is None:
+        return None
+    try:
+        return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _parse_iso(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _entitlement_view(user: dict) -> dict:
+    """Effective Pro status, recomputed on every read so an access window that
+    has lapsed stops counting even if RevenueCat's EXPIRATION event is late."""
+    expires = _parse_iso(user.get("pro_expires_at"))
+    stored = bool(user.get("is_pro", False))
+    active = stored and (expires is None or expires > datetime.now(timezone.utc))
+    return {
+        "is_pro": active,
+        "expires_at": user.get("pro_expires_at"),
+        "will_renew": bool(user.get("pro_will_renew", False)) if active else False,
+        "billing_issue": bool(user.get("pro_billing_issue", False)) if active else False,
+        "period_type": user.get("pro_period_type"),
+        "product_id": user.get("pro_product_id"),
+        "source": user.get("pro_source"),
+        "updated_at": user.get("pro_updated_at"),
+    }
+
+
+def user_is_pro(user: dict) -> bool:
+    return _entitlement_view(user)["is_pro"]
+
+
+async def _apply_entitlement(user_ids: List[str], fields: dict, event_ts_ms: Optional[int]) -> int:
+    """Write Pro fields to every matching user, skipping any user that already
+    has a newer RevenueCat event applied (webhooks can arrive out of order)."""
+    if not user_ids:
+        return 0
+    query: dict = {"user_id": {"$in": user_ids}}
+    if event_ts_ms is not None:
+        query["$or"] = [{"pro_event_ts_ms": {"$exists": False}}, {"pro_event_ts_ms": {"$lte": event_ts_ms}}]
+        fields = {**fields, "pro_event_ts_ms": event_ts_ms}
+    fields = {**fields, "pro_updated_at": datetime.now(timezone.utc).isoformat()}
+    res = await db.users.update_many(query, {"$set": fields})
+    return res.modified_count
+
+
+def _fields_from_subscriber(subscriber: dict) -> dict:
+    """Map a RevenueCat v1 subscriber record to our stored Pro fields."""
+    ent = (subscriber.get("entitlements") or {}).get(PRO_ENTITLEMENT_ID)
+    if not ent:
+        return {"is_pro": False, "pro_expires_at": None, "pro_will_renew": False, "pro_billing_issue": False,
+                "pro_period_type": None, "pro_product_id": None, "pro_source": "revenuecat_api"}
+    expires = _parse_iso(ent.get("expires_date"))
+    grace = _parse_iso(ent.get("grace_period_expires_date"))
+    effective = max([d for d in (expires, grace) if d], default=None)
+    active = effective is None or effective > datetime.now(timezone.utc)
+    product_id = ent.get("product_identifier")
+    sub = (subscriber.get("subscriptions") or {}).get(product_id) or {}
+    return {
+        "is_pro": active,
+        "pro_expires_at": effective.isoformat() if effective else None,
+        "pro_will_renew": active and not sub.get("unsubscribe_detected_at") and bool(expires),
+        "pro_billing_issue": bool(sub.get("billing_issues_detected_at")),
+        "pro_period_type": sub.get("period_type"),
+        "pro_product_id": product_id,
+        "pro_source": "revenuecat_api",
+    }
+
+
+async def _fetch_revenuecat_subscriber(app_user_id: str) -> Optional[dict]:
+    if not REVENUECAT_SECRET_API_KEY:
+        return None
+    from urllib.parse import quote
+    async with httpx.AsyncClient(timeout=10.0) as hc:
+        resp = await hc.get(
+            f"{REVENUECAT_API_BASE}/v1/subscribers/{quote(app_user_id, safe='')}",
+            headers={"Authorization": f"Bearer {REVENUECAT_SECRET_API_KEY}"},
+        )
+    if resp.status_code >= 400:
+        logging.warning("RevenueCat subscriber lookup failed: %s", resp.status_code)
+        raise HTTPException(502, "Could not verify subscription with RevenueCat")
+    return (resp.json() or {}).get("subscriber") or {}
+
 
 @api_router.get("/entitlements/me")
 async def get_my_entitlement(user=Depends(get_current_user)):
-    return {"is_pro": bool(user.get("is_pro", False))}
+    return _entitlement_view(user)
+
+
+@api_router.post("/entitlements/refresh")
+async def refresh_my_entitlement(user=Depends(get_current_user)):
+    """Ask RevenueCat (server-to-server) for this user's current status. The
+    client can trigger a refresh but never supplies the answer."""
+    if not REVENUECAT_SECRET_API_KEY:
+        raise HTTPException(503, "Server-side subscription verification is not configured")
+    subscriber = await _fetch_revenuecat_subscriber(user["user_id"])
+    await _apply_entitlement([user["user_id"]], _fields_from_subscriber(subscriber or {}), None)
+    fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return _entitlement_view(fresh or user)
+
 
 @api_router.post("/entitlements/sync")
-async def sync_entitlement(body: EntitlementSync, user=Depends(get_current_user)):
-    is_pro = body.is_pro
-    if REVENUECAT_SECRET_API_KEY:
-        app_user_id = quote(user["user_id"], safe="")
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as revenuecat:
-                response = await revenuecat.get(
-                    f"https://api.revenuecat.com/v1/subscribers/{app_user_id}",
-                    headers={
-                        "Authorization": f"Bearer {REVENUECAT_SECRET_API_KEY}",
-                        "Accept": "application/json",
-                    },
-                )
-            if response.status_code == 404:
-                is_pro = False
-            else:
-                response.raise_for_status()
-                entitlement = (
-                    response.json()
-                    .get("subscriber", {})
-                    .get("entitlements", {})
-                    .get(REVENUECAT_ENTITLEMENT_ID)
-                )
-                expires_at = entitlement.get("expires_date") if entitlement else None
-                is_pro = bool(entitlement) and (
-                    expires_at is None
-                    or datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-                    > datetime.now(timezone.utc)
-                )
-        except (httpx.HTTPError, ValueError, TypeError):
-            logging.exception("RevenueCat entitlement verification failed")
-            raise HTTPException(502, "Subscription verification is temporarily unavailable")
-    elif ENVIRONMENT == "production":
-        raise HTTPException(503, "Subscription verification is not configured")
+async def sync_entitlement_removed():
+    raise HTTPException(410, "Pro status is verified by RevenueCat; clients can no longer report it")
 
-    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"is_pro": is_pro}})
-    return {"is_pro": is_pro}
+
+@api_router.post("/webhooks/revenuecat")
+async def revenuecat_webhook(request: Request, authorization: Optional[str] = Header(default=None)):
+    if not REVENUECAT_WEBHOOK_AUTH:
+        raise HTTPException(503, "RevenueCat webhook is not configured")
+    supplied = (authorization or "").strip()
+    if supplied.lower().startswith("bearer "):
+        supplied = supplied[7:].strip()
+    if not _hmac.compare_digest(supplied.encode(), REVENUECAT_WEBHOOK_AUTH.encode()):
+        raise HTTPException(401, "Invalid webhook authorization")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    event = (body or {}).get("event") or {}
+    event_id, event_type = event.get("id"), event.get("type")
+    if not event_id or not event_type:
+        raise HTTPException(400, "Missing event id or type")
+
+    # Idempotency: RevenueCat retries deliveries, so each event id applies once.
+    try:
+        await db.revenuecat_events.insert_one({
+            "event_id": event_id, "type": event_type,
+            "app_user_id": event.get("app_user_id"),
+            "received_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception:
+        return {"ok": True, "duplicate": True}
+
+    ts = event.get("event_timestamp_ms")
+    ts = int(ts) if isinstance(ts, (int, float)) else None
+
+    if event_type == "TEST":
+        return {"ok": True, "applied": 0}
+
+    if event_type == "TRANSFER":
+        # Access moved between app user ids (e.g. restore on a different account).
+        from_ids = [i for i in (event.get("transferred_from") or []) if isinstance(i, str)]
+        to_ids = [i for i in (event.get("transferred_to") or []) if isinstance(i, str)]
+        applied = await _apply_entitlement(from_ids, {"is_pro": False, "pro_will_renew": False,
+                                                      "pro_billing_issue": False, "pro_source": "revenuecat_webhook"}, ts)
+        for uid in to_ids:
+            subscriber = await _fetch_revenuecat_subscriber(uid) if REVENUECAT_SECRET_API_KEY else None
+            if subscriber is not None:
+                applied += await _apply_entitlement([uid], _fields_from_subscriber(subscriber), ts)
+        return {"ok": True, "applied": applied}
+
+    ids = {event.get("app_user_id"), event.get("original_app_user_id"), *(event.get("aliases") or [])}
+    user_ids = [i for i in ids if isinstance(i, str) and i and not i.startswith("$RCAnonymousID:")]
+    entitlements = event.get("entitlement_ids") or ([event["entitlement_id"]] if event.get("entitlement_id") else [])
+    if PRO_ENTITLEMENT_ID not in entitlements and event_type != "EXPIRATION":
+        return {"ok": True, "applied": 0, "ignored": "not the Pro entitlement"}
+
+    expires_iso = _ms_to_iso(event.get("expiration_at_ms"))
+    grace_iso = _ms_to_iso(event.get("grace_period_expiration_at_ms"))
+    effective_iso = max([v for v in (expires_iso, grace_iso) if v], default=None, key=lambda v: _parse_iso(v))
+    effective = _parse_iso(effective_iso)
+    now = datetime.now(timezone.utc)
+
+    if event_type == "EXPIRATION":
+        if PRO_ENTITLEMENT_ID not in entitlements and entitlements:
+            return {"ok": True, "applied": 0, "ignored": "not the Pro entitlement"}
+        fields = {"is_pro": False, "pro_expires_at": expires_iso, "pro_will_renew": False, "pro_billing_issue": False}
+    elif event_type in _RC_ACCESS_EVENTS:
+        active = effective is None or effective > now
+        fields = {
+            "is_pro": active,
+            "pro_expires_at": effective_iso,
+            "pro_will_renew": active and event_type not in {"CANCELLATION", "SUBSCRIPTION_PAUSED", "NON_RENEWING_PURCHASE"},
+            "pro_billing_issue": event_type == "BILLING_ISSUE",
+            "pro_period_type": event.get("period_type"),
+            "pro_product_id": event.get("product_id"),
+        }
+    else:
+        return {"ok": True, "applied": 0, "ignored": f"unhandled event type {event_type}"}
+
+    fields["pro_source"] = "revenuecat_webhook"
+    applied = await _apply_entitlement(user_ids, fields, ts)
+    return {"ok": True, "applied": applied}
 
 
 # ==================== Auto-Clean Scheduling (Pro-only) ====================
@@ -1784,7 +1954,7 @@ async def get_autoclean_schedule(user=Depends(get_current_user)):
 async def save_autoclean_schedule(body: AutoCleanSchedule, user=Depends(get_current_user)):
     """Upsert (mirrors PUT /reminders) — Pro-gated using the STORED
     entitlement flag, never a value the caller supplies."""
-    if not user.get("is_pro", False):
+    if not user_is_pro(user):
         raise HTTPException(403, "Auto-Clean Scheduling is a Pro feature")
     _validate_autoclean_schedule(body)
     user_id = user["user_id"]
@@ -1847,7 +2017,7 @@ async def run_autoclean_if_due(user=Depends(get_current_user)):
         return AutoCleanRunResult(ran=False, reason="no_schedule")
     if not schedule.get("enabled", True):
         return AutoCleanRunResult(ran=False, reason="disabled")
-    if not user.get("is_pro", False):
+    if not user_is_pro(user):
         # The schedule itself is left alone (not deleted) so it resumes
         # exactly as configured if the user re-subscribes.
         return AutoCleanRunResult(ran=False, reason="not_pro")
@@ -1984,7 +2154,7 @@ async def remove_duplicate_groups(req: DuplicateRemoveRequest, user=Depends(get_
     if missing:
         raise HTTPException(404, f"Unknown or already-removed group id(s): {', '.join(missing)}")
 
-    if not user.get("is_pro", False):
+    if not user_is_pro(user):
         now = datetime.now(timezone.utc)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         removed_docs = await db.duplicate_groups.find({"user_id": uid, "status": "removed"}).to_list(1000)
@@ -2114,22 +2284,16 @@ def _security_finding_out(f: dict) -> SecurityFinding:
 
 
 async def _build_security_scan(user_id: str, current_token: str) -> SecurityScanOut:
-    device_docs = await db.security_findings.find({"user_id": user_id, "status": "open"}).to_list(50)
-    device_findings = [
-        {"id": d["id"], "source": "device", "severity": d["severity"], "category": d["category"],
-         "title": d["title"], "description": d["description"], "action": "resolve"}
-        for d in device_docs
-    ]
+    # Legacy device findings were chosen at random, not measured on the handset.
     session_findings = await _real_session_findings(user_id, current_token)
-    all_findings = session_findings + device_findings
+    all_findings = session_findings
     all_findings.sort(key=lambda f: SECURITY_SEVERITY_ORDER.get(f["severity"], 3))
 
-    state = await db.security_scan_state.find_one({"user_id": user_id}, {"_id": 0})
     return SecurityScanOut(
         status=_security_status(all_findings),
-        last_scan_iso=(state or {}).get("last_scan_at", datetime.now(timezone.utc).isoformat()),
-        apps_scanned=(state or {}).get("apps_scanned", 0),
-        permissions_reviewed=(state or {}).get("permissions_reviewed", 0),
+        last_scan_iso=datetime.now(timezone.utc).isoformat(),
+        apps_scanned=0,
+        permissions_reviewed=0,
         findings=[_security_finding_out(f) for f in all_findings],
     )
 
@@ -2138,28 +2302,6 @@ async def _build_security_scan(user_id: str, current_token: str) -> SecurityScan
 async def get_security(user=Depends(get_current_user), authorization: Optional[str] = Header(default=None)):
     uid = user["user_id"]
     cur_token = authorization.split(" ", 1)[1].strip() if authorization and authorization.startswith("Bearer ") else ""
-
-    state = await db.security_scan_state.find_one({"user_id": uid})
-    if not state:
-        initial = _pick_new_security_findings(set(), max_new=2)
-        now_iso = datetime.now(timezone.utc).isoformat()
-        if initial:
-            docs = [{
-                "id": str(uuid.uuid4()), "user_id": uid, "key": f["key"], "category": f["category"],
-                "severity": f["severity"], "title": f["title"], "description": f["description"],
-                "status": "open", "created_at": now_iso, "resolved_at": None,
-            } for f in initial]
-            await db.security_findings.insert_many([d.copy() for d in docs])
-        await db.security_scan_state.update_one(
-            {"user_id": uid},
-            {"$set": {
-                "apps_scanned": random.randint(80, 220),
-                "permissions_reviewed": random.randint(200, 450),
-                "last_scan_at": now_iso,
-            }},
-            upsert=True,
-        )
-
     return await _build_security_scan(uid, cur_token)
 
 
@@ -2167,38 +2309,13 @@ async def get_security(user=Depends(get_current_user), authorization: Optional[s
 async def scan_security(user=Depends(get_current_user), authorization: Optional[str] = Header(default=None)):
     uid = user["user_id"]
     cur_token = authorization.split(" ", 1)[1].strip() if authorization and authorization.startswith("Bearer ") else ""
-
-    existing_open = await db.security_findings.find({"user_id": uid, "status": "open"}).to_list(50)
-    existing_open_keys = {d["key"] for d in existing_open}
-    new_findings = _pick_new_security_findings(existing_open_keys, max_new=1)
-    now_iso = datetime.now(timezone.utc).isoformat()
-    if new_findings:
-        docs = [{
-            "id": str(uuid.uuid4()), "user_id": uid, "key": f["key"], "category": f["category"],
-            "severity": f["severity"], "title": f["title"], "description": f["description"],
-            "status": "open", "created_at": now_iso, "resolved_at": None,
-        } for f in new_findings]
-        await db.security_findings.insert_many([d.copy() for d in docs])
-
-    await db.security_scan_state.update_one(
-        {"user_id": uid}, {"$set": {"last_scan_at": now_iso}}, upsert=True,
-    )
     scan = await _build_security_scan(uid, cur_token)
-    return SecurityScanResult(new_findings_found=len(new_findings), scan=scan)
+    return SecurityScanResult(new_findings_found=0, scan=scan)
 
 
 @api_router.post("/device/security/findings/{finding_id}/resolve")
 async def resolve_security_finding(finding_id: str, user=Depends(get_current_user)):
-    """Only device-level findings live in this collection — a session
-    finding's id is derived (\"session-{sid}\") and is resolved by revoking
-    the session itself via POST /auth/sessions/{sid}/revoke, not this route."""
-    res = await db.security_findings.update_one(
-        {"id": finding_id, "user_id": user["user_id"], "status": "open"},
-        {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat()}},
-    )
-    if res.matched_count == 0:
-        raise HTTPException(404, "Unknown or already-resolved finding id")
-    return {"resolved": True}
+    raise HTTPException(410, "Device findings were simulated; review account sessions instead")
 
 
 # ==================== Battery Health & Optimizer ====================
@@ -2278,7 +2395,7 @@ async def get_battery(user=Depends(get_current_user)):
 async def optimize_battery(user=Depends(get_current_user)):
     """Pro-gated via the same stored is_pro flag as Auto-Clean Scheduling —
     matches what paywall.tsx already promises for 'Battery optimizer'."""
-    if not user.get("is_pro", False):
+    if not user_is_pro(user):
         raise HTTPException(403, "Battery Optimizer is a Pro feature")
     uid = user["user_id"]
     doc = await _get_or_init_battery_state(uid)
@@ -2506,20 +2623,10 @@ async def boost_memory(user=Depends(get_current_user)):
     )
 
 
-def _fallback_recommendations(req: RecommendationRequest) -> List[Recommendation]:
-    """Useful deterministic guidance when the optional AI provider is offline."""
-    return [
-        Recommendation(title="Free up storage", description=f"Clean {req.junk_mb:.0f}MB of junk and cache files to speed up your device.", impact="high"),
-        Recommendation(title="Remove duplicate photos", description=f"You have {req.duplicates_mb:.0f}MB in duplicates—safe to remove after review.", impact="medium"),
-        Recommendation(title="Optimize battery", description="Restrict background activity for high-drain apps to extend battery life.", impact="medium"),
-        Recommendation(title="Review app permissions", description="Some apps have broader access than they need. A quick review improves privacy.", impact="low"),
-    ]
-
-
 @api_router.post("/ai/recommendations", response_model=List[Recommendation])
 async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     if not EMERGENT_LLM_KEY:
-        return _fallback_recommendations(req)
+        raise HTTPException(500, "LLM key not configured")
 
     # SEC-001: simple per-client rate limit on the paid LLM endpoint
     client_key = request.client.host if request.client else "unknown"
@@ -2550,8 +2657,6 @@ async def get_ai_recommendations(req: RecommendationRequest, request: Request):
     )
 
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"rec-{uuid.uuid4()}",
@@ -2570,9 +2675,15 @@ async def get_ai_recommendations(req: RecommendationRequest, request: Request):
             data = json.loads(match.group(0))
             return [Recommendation(**r) for r in data[:4]]
         raise ValueError("No JSON array found")
-    except Exception:
+    except Exception as e:
         logging.exception("AI recommendation failed")
-        return _fallback_recommendations(req)
+        # graceful fallback
+        return [
+            Recommendation(title="Free up storage", description=f"Clean {req.junk_mb:.0f}MB of junk and cache files to speed up your device.", impact="high"),
+            Recommendation(title="Remove duplicate photos", description=f"You have {req.duplicates_mb:.0f}MB in duplicates—safe to remove after review.", impact="medium"),
+            Recommendation(title="Optimize battery", description="Restrict background activity for high-drain apps to extend battery life.", impact="medium"),
+            Recommendation(title="Review app permissions", description="Some apps have broader access than they need. A quick review improves privacy.", impact="low"),
+        ]
 
 
 # ==================== AI Health Coach ====================
@@ -2633,8 +2744,7 @@ async def coach_daily(user=Depends(get_current_user)):
     )
 
     if not EMERGENT_LLM_KEY:
-        doc = fallback.model_dump()
-        doc["user_id"] = user_id
+        doc = fallback.dict(); doc["user_id"] = user_id
         await db.coach_daily.insert_one(doc.copy())
         return fallback
 
@@ -2653,8 +2763,6 @@ async def coach_daily(user=Depends(get_current_user)):
     prompt = f"User's first name: {name}\nUser history:\n{memory}\n\nGenerate today's coaching card as JSON."
 
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"coach-daily-{uuid.uuid4()}",
@@ -2677,21 +2785,18 @@ async def coach_daily(user=Depends(get_current_user)):
             action_label=str(data.get("action_label") or fallback.action_label)[:24],
             action_route=data.get("action_route") if data.get("action_route") in allowed_routes else "/smart-scan",
         )
-        doc = card.model_dump()
-        doc["user_id"] = user_id
+        doc = card.dict(); doc["user_id"] = user_id
         await db.coach_daily.insert_one(doc.copy())
         return card
     except Exception:
         logging.exception("Coach daily generation failed")
-        doc = fallback.model_dump()
-        doc["user_id"] = user_id
+        doc = fallback.dict(); doc["user_id"] = user_id
         await db.coach_daily.insert_one(doc.copy())
         return fallback
 
 
 @api_router.get("/coach/history", response_model=List[CoachMessage])
 async def coach_history(user=Depends(get_current_user)):
-    require_pro(user)
     user_id = user["user_id"]
     docs = await db.coach_messages.find({"user_id": user_id}).sort("created_at", 1).to_list(200)
     return [CoachMessage(role=d["role"], content=d["content"], created_at=d["created_at"]) for d in docs]
@@ -2705,7 +2810,9 @@ async def coach_clear(user=Depends(get_current_user)):
 
 @api_router.post("/coach/chat", response_model=CoachMessage)
 async def coach_chat(req: CoachChatRequest, request: Request, user=Depends(get_current_user)):
-    require_pro(user)
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(500, "LLM key not configured")
+
     client_key = user["user_id"]
     if not _allow_ai_call(client_key):
         raise HTTPException(429, "Too many messages. Please wait a moment and try again.")
@@ -2747,22 +2854,17 @@ async def coach_chat(req: CoachChatRequest, request: Request, user=Depends(get_c
         f"RECENT CONVERSATION:\n{convo if convo else '(this is the first message)'}"
     )
 
-    if not EMERGENT_LLM_KEY:
-        reply = "Start with a Smart Scan, then review the largest safe cleanup category first. I can still track your cleanup history while personalized AI coaching is temporarily unavailable."
-    else:
-        try:
-            from emergentintegrations.llm.chat import LlmChat, UserMessage
-
-            chat = LlmChat(
-                api_key=EMERGENT_LLM_KEY,
-                session_id=f"coach-{user_id}",
-                system_message=system_message,
-            ).with_model("anthropic", "claude-sonnet-5")
-            response = await chat.send_message(UserMessage(text=message))
-            reply = (response if isinstance(response, str) else str(response)).strip()
-        except Exception:
-            logging.exception("Coach chat failed")
-            reply = "I'm having trouble thinking right now. Try a Smart Scan in the meantime, and ask me again in a moment."
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"coach-{user_id}",
+            system_message=system_message,
+        ).with_model("anthropic", "claude-sonnet-5")
+        response = await chat.send_message(UserMessage(text=message))
+        reply = (response if isinstance(response, str) else str(response)).strip()
+    except Exception:
+        logging.exception("Coach chat failed")
+        reply = "I'm having trouble thinking right now. Try a Smart Scan in the meantime, and ask me again in a moment."
 
     reply = reply[:1500]
     reply_at = datetime.now(timezone.utc).isoformat()
@@ -2898,16 +3000,10 @@ async def ack_coach_insight(key: str, user=Depends(get_current_user)):
 
 app.include_router(api_router)
 
-_configured_origins = [
-    origin.strip()
-    for origin in os.environ.get("CORS_ORIGINS", "*").split(",")
-    if origin.strip()
-]
-
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=False,
-    allow_origins=_configured_origins or ["*"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -2933,6 +3029,7 @@ async def create_indexes():
         await db.large_files.create_index("user_id")
         await db.large_files.create_index([("user_id", 1), ("status", 1)])
         await db.memory_state.create_index("user_id", unique=True)
+        await db.revenuecat_events.create_index("event_id", unique=True)
     except Exception:
         logging.exception("Index creation failed")
 
