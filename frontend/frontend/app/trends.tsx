@@ -95,7 +95,7 @@ export default function Trends() {
 
             <Pressable style={styles.cta} onPress={() => router.push('/smart-scan')} testID="trends-scan-cta">
               <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
-              <Text style={styles.ctaText}>Boost my score</Text>
+              <Text style={styles.ctaText}>Improve my score</Text>
             </Pressable>
           </ScrollView>
         )}
