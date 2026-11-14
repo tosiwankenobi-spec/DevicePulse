@@ -11,19 +11,19 @@ const SLIDES = [
   {
     icon: 'pulse' as const,
     title: 'Understand your device',
-    body: 'Get a clear health score across storage, memory, battery and security in seconds.',
+    body: 'See your real storage and battery readings, measured on this phone, in seconds.',
     color: theme.color.brand,
   },
   {
     icon: 'sparkles' as const,
     title: 'One-tap Smart Scan',
-    body: 'Find duplicate photos, junk files and large media—review everything before we clean.',
+    body: 'Measure free space and DevicePulse cache, then get guided steps to review files safely in Android.',
     color: theme.color.info,
   },
   {
     icon: 'shield-checkmark' as const,
     title: 'Privacy-first optimization',
-    body: 'On iOS we stay App Store compliant. On Android we go deeper—always with your consent.',
+    body: 'Your files are never deleted automatically. You stay in control of every change.',
     color: '#8B5CF6',
   },
 ];

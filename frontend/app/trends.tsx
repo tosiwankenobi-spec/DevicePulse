@@ -36,7 +36,11 @@ export default function Trends() {
           <View style={{ width: 26 }} />
         </View>
 
-        {loading || !data ? (
+        {!loading && (!data || !data.points?.length) ? (
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }} testID="trends-empty">
+            <Text style={styles.currentLabel}>Run a Smart Scan to start your trend</Text>
+          </View>
+        ) : loading || !data ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
             <ActivityIndicator color={theme.color.brand} />
           </View>
@@ -91,7 +95,7 @@ export default function Trends() {
 
             <Pressable style={styles.cta} onPress={() => router.push('/smart-scan')} testID="trends-scan-cta">
               <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
-              <Text style={styles.ctaText}>Boost my score</Text>
+              <Text style={styles.ctaText}>Improve my score</Text>
             </Pressable>
           </ScrollView>
         )}

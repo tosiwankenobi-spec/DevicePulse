@@ -3,22 +3,17 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Modal, ActivityIndicator
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image } from 'expo-image';
+import { PRO_TOOLS, PRO_ROUTINES } from '@/src/pro-content';
 import { Ionicons } from '@expo/vector-icons';
 import { useSubscription } from '@/src/lib/revenuecat';
 import { theme } from '@/src/theme';
 
-const FEATURES = [
-  { icon: 'chatbubbles', label: 'Full AI Device Guide conversations' },
-  { icon: 'people', label: 'Family account dashboard' },
-  { icon: 'time', label: 'Complete cleanup history' },
-  { icon: 'share-social', label: 'Shareable cleanup reports' },
-] as const;
+const FEATURES = [...PRO_TOOLS.map(tool => ({ icon: tool.icon, label: tool.title })), ...PRO_ROUTINES.map(routine => ({ icon: 'checkmark-done-outline' as const, label: routine.title }))];
 
 export default function Paywall() {
   const router = useRouter();
-  const { offerings, isSubscribed, identityReady, identityError, isLoading, purchase, restore, isPurchasing, isRestoring } = useSubscription();
-  const packages = offerings?.current?.availablePackages ?? [];
+  const { offerings, isSubscribed, identityReady, identityError, isLoading, purchase, restore, isPurchasing, isRestoring, verificationError, retryVerification } = useSubscription();
+  const packages = (offerings?.current?.availablePackages ?? []).filter(p => p.packageType === 'MONTHLY' || p.packageType === 'ANNUAL');
   const [selected, setSelected] = useState(0);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [errMsg, setErrMsg] = useState('');
@@ -44,28 +39,19 @@ export default function Paywall() {
       await purchase(pkg);
     } catch (e: any) {
       if (e?.userCancelled || String(e).includes('userCancelled')) return;
-      setErrMsg('Purchase could not be completed. Please try again.');
+      setErrMsg(e instanceof Error ? e.message : 'Purchase could not be completed. Please try again.');
     }
   };
 
   const onRestore = async () => {
     setErrMsg('');
-    try { await restore(); } catch { setErrMsg('Nothing to restore.'); }
+    try { await restore(); } catch (e) { setErrMsg(e instanceof Error ? e.message : 'Restore could not be verified.'); }
   };
 
   return (
     <View style={styles.container} testID="paywall-screen">
       <SafeAreaView style={{ flex: 1 }} edges={['top', 'bottom']}>
         <View style={styles.hero}>
-          <Image
-            source="https://images.unsplash.com/photo-1774385439710-6cb1d8a9141d?w=800"
-            style={StyleSheet.absoluteFill}
-            contentFit="cover"
-          />
-          <LinearGradient
-            colors={['transparent', 'rgba(5,15,20,0.85)', theme.color.surface]}
-            style={StyleSheet.absoluteFill}
-          />
           <Pressable style={styles.close} onPress={() => router.back()} hitSlop={12} testID="paywall-close">
             <Ionicons name="close" size={22} color={theme.color.onSurface} />
           </Pressable>
@@ -74,8 +60,8 @@ export default function Paywall() {
               <Ionicons name="sparkles" size={12} color={theme.color.onBrand} />
               <Text style={styles.proBadgeText}>DEVICEPULSE PRO</Text>
             </View>
-            <Text style={styles.heroTitle}>More guidance.{ '\n' }More continuity.</Text>
-            <Text style={styles.heroSub}>Unlock AI guidance, family tools, complete history and shareable progress reports.</Text>
+            <Text style={styles.heroTitle}>DevicePulse Pro</Text>
+            <Text style={styles.heroSub}>Personal Coach, guided care routines, cleanup history and shareable reports.</Text>
           </View>
         </View>
 
@@ -96,7 +82,8 @@ export default function Paywall() {
             <View style={styles.activeCard} testID="paywall-active">
               <Ionicons name="checkmark-circle" size={40} color={theme.color.brand} />
               <Text style={styles.activeTitle}>You&apos;re on Pro 🎉</Text>
-              <Text style={styles.activeBody}>All premium tools are unlocked. Thank you for supporting DevicePulse!</Text>
+              <Text style={styles.activeBody}>Your purchase has been verified. Your Pro toolkit is ready.</Text>
+              <Pressable onPress={() => router.replace('/pro')}><Text style={styles.restoreText}>Open Pro toolkit →</Text></Pressable>
             </View>
           ) : isLoading ? (
             <View style={{ paddingVertical: 30 }}><ActivityIndicator color={theme.color.brand} /></View>
@@ -127,8 +114,6 @@ export default function Paywall() {
                 })}
               </View>
 
-              {!!errMsg && <Text style={styles.errMsg} testID="paywall-error">{errMsg}</Text>}
-
               {!identityReady && (
                 <Text style={styles.errMsg} testID="paywall-identity-status">
                   {identityError
@@ -148,19 +133,20 @@ export default function Paywall() {
                   }
                   setConfirmOpen(true);
                 }}
-                disabled={isPurchasing}
+                disabled={isPurchasing || isRestoring}
                 testID="paywall-cta"
               >
                 <LinearGradient colors={theme.gradients.brand} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
-                {isPurchasing ? <ActivityIndicator color={theme.color.onBrand} /> : <Text style={styles.ctaText}>{selectedTrial ? `Start ${selectedTrial}` : `Subscribe ${pkg?.product.priceString}`}</Text>}
+                {isPurchasing ? <ActivityIndicator color={theme.color.onBrand} /> : <Text style={styles.ctaText}>{selectedTrial ? `Start ${selectedTrial}` : `Subscribe ${pkg?.product.priceString} / ${pkg?.packageType === 'ANNUAL' ? 'year' : 'month'}`}</Text>}
               </Pressable>
 
-              <Pressable style={styles.restoreBtn} onPress={onRestore} disabled={isRestoring} testID="paywall-restore">
-                <Text style={styles.restoreText}>{isRestoring ? 'Restoring…' : 'Restore purchases'}</Text>
-              </Pressable>
-              <Text style={styles.disclaimer}>Subscriptions are processed by Google Play. Cancel anytime in Play Store settings.</Text>
             </>
           )}
+          {!!verificationError && <Text style={styles.errMsg}>{verificationError}</Text>}
+          {!!errMsg && <Text style={styles.errMsg}>{errMsg}</Text>}
+          <Pressable style={styles.restoreBtn} onPress={() => retryVerification().then(state => setErrMsg(state.is_pro ? '' : 'No active Pro purchase verified yet.')).catch(e => setErrMsg(e instanceof Error ? e.message : 'Verification unavailable.'))}><Text style={styles.restoreText}>Retry purchase verification</Text></Pressable>
+          <Pressable style={styles.restoreBtn} onPress={onRestore} disabled={isRestoring || isPurchasing || !identityReady} testID="paywall-restore"><Text style={styles.restoreText}>{isRestoring ? 'Restoring…' : 'Restore purchases'}</Text></Pressable>
+          <Text style={styles.disclaimer}>Renews automatically at the displayed price per billing period until canceled. Manage or cancel in Google Play. Family members each need Pro. Personal files are never deleted automatically.</Text>
         </ScrollView>
       </SafeAreaView>
 
@@ -169,8 +155,8 @@ export default function Paywall() {
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Confirm subscription</Text>
             <Text style={styles.modalBody}>{selectedTrial
-              ? `Start your ${selectedTrial}, then ${pkg?.product.priceString}. Cancel anytime before it ends.`
-              : `Subscribe to DevicePulse Pro for ${pkg?.product.priceString}?`}</Text>
+              ? `Start your ${selectedTrial}, then ${pkg?.product.priceString} per ${pkg?.packageType === 'ANNUAL' ? 'year' : 'month'}. Cancel anytime before it ends.`
+              : `Subscribe to DevicePulse Pro for ${pkg?.product.priceString} per ${pkg?.packageType === 'ANNUAL' ? 'year' : 'month'}?`}</Text>
             <View style={styles.modalButtons}>
               <Pressable style={[styles.modalBtn, styles.modalGhost]} onPress={() => setConfirmOpen(false)} testID="confirm-cancel">
                 <Text style={styles.modalGhostText}>Cancel</Text>
@@ -188,19 +174,19 @@ export default function Paywall() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.color.surface },
-  hero: { height: 320, overflow: 'hidden' },
+  hero: { height: 210, overflow: 'hidden' },
   close: { position: 'absolute', top: 12, right: 16, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', zIndex: 2 },
   heroContent: { position: 'absolute', bottom: 20, left: 0, right: 0, paddingHorizontal: theme.space.lg },
   proBadge: { flexDirection: 'row', alignSelf: 'flex-start', alignItems: 'center', gap: 4, backgroundColor: theme.color.brand, paddingHorizontal: 10, paddingVertical: 5, borderRadius: theme.radius.pill },
   proBadgeText: { color: theme.color.onBrand, fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
-  heroTitle: { color: theme.color.onSurface, fontSize: 30, fontWeight: '800', letterSpacing: -0.8, marginTop: 12, lineHeight: 34 },
+  heroTitle: { color: theme.color.onSurface, fontSize: 30, fontWeight: '800', marginTop: 12, lineHeight: 34 },
   heroSub: { color: theme.color.onSurface2, fontSize: 14, marginTop: 8, lineHeight: 20 },
   featureList: { paddingHorizontal: theme.space.lg, gap: 12, marginTop: theme.space.md },
   featureRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.border },
   featureIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: theme.color.brand3, alignItems: 'center', justifyContent: 'center' },
   featureText: { color: theme.color.onSurface, fontSize: 14, fontWeight: '600', flex: 1 },
-  plans: { flexDirection: 'row', gap: 10, paddingHorizontal: theme.space.lg, marginTop: theme.space.xl },
-  plan: { flex: 1, padding: theme.space.md, borderRadius: theme.radius.lg, borderWidth: 2, borderColor: theme.color.border, backgroundColor: theme.color.surface2 },
+  plans: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingHorizontal: theme.space.lg, marginTop: theme.space.xl },
+  plan: { flexGrow: 1, flexBasis: 150, padding: theme.space.md, borderRadius: theme.radius.lg, borderWidth: 2, borderColor: theme.color.border, backgroundColor: theme.color.surface2 },
   planActive: { borderColor: theme.color.brand, backgroundColor: theme.color.brand3 },
   planLabel: { color: theme.color.onSurface, fontSize: 13, fontWeight: '700' },
   planPrice: { color: theme.color.onSurface, fontSize: 24, fontWeight: '800', marginTop: 4, letterSpacing: -0.5 },

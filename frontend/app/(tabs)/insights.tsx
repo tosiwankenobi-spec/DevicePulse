@@ -4,7 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Battery from 'expo-battery';
-import { openApplicationSettings, openBatterySettings, openDeviceStorageManager, openSecuritySettings, scanLocalDevice, type LocalDeviceScan } from '@/src/deviceStorage';
+import { openApplicationSettings, openBatterySettings, openDeviceStorageManager, openSecuritySettings, tryScanLocalDevice, type LocalDeviceScan } from '@/src/deviceStorage';
 import { theme } from '@/src/theme';
 
 type Tab = 'storage' | 'battery' | 'memory' | 'security';
@@ -33,7 +33,7 @@ export default function Insights() {
   const [battery, setBattery] = useState<BatterySnapshot | null>(null);
 
   const load = async () => {
-    setStorage(scanLocalDevice());
+    setStorage(tryScanLocalDevice());
     try {
       const power = await Battery.getPowerStateAsync();
       const appOptimizationEnabled = await Battery.isBatteryOptimizationEnabledAsync();

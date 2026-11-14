@@ -1,169 +1,133 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 import Purchases, { LOG_LEVEL } from "react-native-purchases";
-import type { CustomerInfo, PurchasesPackage } from "react-native-purchases";
+import type { PurchasesPackage } from "react-native-purchases";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { scheduleTrialReminder } from "../trialReminder";
 import { api } from "../api";
 import { useAuth } from "../AuthContext";
 
-const REVENUECAT_TEST_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY;
-const REVENUECAT_IOS_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
-const REVENUECAT_ANDROID_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY;
-
 export const REVENUECAT_ENTITLEMENT_IDENTIFIER = "pro";
-
 function platformApiKey() {
-  if (Platform.OS === "web" || __DEV__) return REVENUECAT_TEST_API_KEY;
-  if (Platform.OS === "ios") return REVENUECAT_IOS_API_KEY;
-  if (Platform.OS === "android") return REVENUECAT_ANDROID_API_KEY;
-  return undefined;
+  if (Platform.OS === "android") return process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY;
+  if (Platform.OS === "ios") return process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
+  return undefined; // A browser or Test Store must never grant paid Android access.
 }
-
 export const rcEnabled = Boolean(platformApiKey());
-
-function getRevenueCatApiKey() {
-  const key = platformApiKey();
-  if (!key) throw new Error(`RevenueCat API key is not configured for ${Platform.OS}`);
-  return key;
-}
-
 export function initializeRevenueCat() {
-  if (!rcEnabled) return;
+  const key = platformApiKey();
+  if (!key) return;
   Purchases.setLogLevel(__DEV__ ? LOG_LEVEL.DEBUG : LOG_LEVEL.WARN);
-  Purchases.configure({ apiKey: getRevenueCatApiKey() });
+  Purchases.configure({ apiKey: key });
 }
 
 function useSubscriptionContext() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const revenueCatUserRef = useRef<string | null>(null);
+  const userId = user?.user_id;
+  const [readyId, setReadyId] = useState<string | null>(null);
   const [identityError, setIdentityError] = useState(false);
+  const identityQueue = useRef(Promise.resolve());
+  const identityReady = Boolean(userId && readyId === userId);
+  const entitlementKey = ["pro-verified", userId];
 
-  const customerInfoQuery = useQuery({
-    queryKey: ["revenuecat", "customer-info"],
-    queryFn: () => Purchases.getCustomerInfo(),
-    enabled: rcEnabled,
-    staleTime: 60 * 1000,
+  useEffect(() => {
+    let cancelled = false;
+    setReadyId(null);
+    setIdentityError(false);
+    queryClient.removeQueries({ queryKey: ["pro-verified"] });
+    if (!rcEnabled) return;
+    // Serialize account switches so a late login cannot overwrite a newer identity.
+    identityQueue.current = identityQueue.current.catch(() => {}).then(async () => {
+      if (cancelled) return;
+      try {
+        if (userId) {
+          await Purchases.logIn(userId);
+          if (!cancelled && await Purchases.getAppUserID() === userId) setReadyId(userId);
+        } else if (!(await Purchases.isAnonymous())) {
+          await Purchases.logOut();
+        }
+      } catch {
+        if (!cancelled) setIdentityError(true);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [userId, queryClient]);
+
+  const entitlementQuery = useQuery({
+    queryKey: entitlementKey,
+    queryFn: () => api.syncEntitlement(),
+    enabled: identityReady,
+    retry: false,
+    staleTime: 0,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
   });
-
   const offeringsQuery = useQuery({
     queryKey: ["revenuecat", "offerings"],
     queryFn: () => Purchases.getOfferings(),
     enabled: rcEnabled,
-    staleTime: 300 * 1000,
+    staleTime: 300_000,
   });
-
   useEffect(() => {
-    if (!rcEnabled) return;
-    const listener = (info: CustomerInfo) =>
-      queryClient.setQueryData(["revenuecat", "customer-info"], info);
-    Purchases.addCustomerInfoUpdateListener(listener);
-    return () => { Purchases.removeCustomerInfoUpdateListener(listener); };
+    const refresh = () => { void queryClient.invalidateQueries({ queryKey: ["pro-verified"] }); };
+    const subscription = AppState.addEventListener("change", state => { if (state === "active") refresh(); });
+    if (rcEnabled) Purchases.addCustomerInfoUpdateListener(refresh);
+    return () => {
+      subscription.remove();
+      if (rcEnabled) Purchases.removeCustomerInfoUpdateListener(refresh);
+    };
   }, [queryClient]);
 
-  // RevenueCat starts with an anonymous customer. When app authentication
-  // finishes, bind that customer to the real app user and immediately replace
-  // the cached anonymous CustomerInfo. Without this cache update the paywall
-  // can stay disabled even though Purchases.logIn() succeeded.
-  useEffect(() => {
-    if (!rcEnabled) return;
-    let cancelled = false;
-
-    (async () => {
-      try {
-        setIdentityError(false);
-        if (user?.user_id && revenueCatUserRef.current !== user.user_id) {
-          const { customerInfo } = await Purchases.logIn(user.user_id);
-          if (cancelled) return;
-          revenueCatUserRef.current = user.user_id;
-          queryClient.setQueryData(["revenuecat", "customer-info"], customerInfo);
-        } else if (!user?.user_id && revenueCatUserRef.current) {
-          const customerInfo = await Purchases.logOut();
-          if (cancelled) return;
-          revenueCatUserRef.current = null;
-          queryClient.setQueryData(["revenuecat", "customer-info"], customerInfo);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setIdentityError(true);
-          console.log("RevenueCat identity error", e);
-        }
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [queryClient, user?.user_id]);
-
+  async function verify() {
+    const state = await api.syncEntitlement();
+    queryClient.setQueryData(entitlementKey, state);
+    return state;
+  }
+  async function checkIdentity() {
+    if (!identityReady || !userId || await Purchases.getAppUserID() !== userId) {
+      throw new Error("Finish signing into your account before purchasing or restoring.");
+    }
+  }
   const purchaseMutation = useMutation({
-    mutationFn: async (packageToPurchase: PurchasesPackage) => {
-      const id = (await Purchases.getCustomerInfo()).originalAppUserId;
-      if (id.startsWith("$RCAnonymousID:")) throw new Error("identity_not_ready");
-      const { customerInfo } = await Purchases.purchasePackage(packageToPurchase);
-      return customerInfo;
-    },
-    onSuccess: (customerInfo) => {
-      queryClient.setQueryData(["revenuecat", "customer-info"], customerInfo);
+    mutationFn: async (pkg: PurchasesPackage) => {
+      await checkIdentity();
+      await Purchases.purchasePackage(pkg);
+      try {
+        const state = await verify();
+        if (!state.is_pro) throw new Error("pending");
+        return state;
+      } catch {
+        throw new Error("Purchase received; Pro verification is pending. Retry verification—do not buy again.");
+      }
     },
   });
-
   const restoreMutation = useMutation({
-    mutationFn: () => Purchases.restorePurchases(),
-    onSuccess: (customerInfo) => {
-      queryClient.setQueryData(["revenuecat", "customer-info"], customerInfo);
+    mutationFn: async () => {
+      await checkIdentity();
+      await Purchases.restorePurchases();
+      const state = await verify();
+      if (!state.is_pro) throw new Error("No active Pro subscription was verified for this account.");
+      return state;
     },
   });
-
-  const isSubscribed =
-    customerInfoQuery.data?.entitlements.active?.[REVENUECAT_ENTITLEMENT_IDENTIFIER] !== undefined;
-
-  // Schedule a friendly local reminder ~24h before a free trial ends
-  const proEntitlement = customerInfoQuery.data?.entitlements.active?.[REVENUECAT_ENTITLEMENT_IDENTIFIER];
-  useEffect(() => {
-    if (!rcEnabled) return;
-    scheduleTrialReminder(proEntitlement);
-  }, [proEntitlement]);
-
-  const originalAppUserId = customerInfoQuery.data?.originalAppUserId;
-  const identityReady = !!originalAppUserId && !originalAppUserId.startsWith("$RCAnonymousID:");
-
-  // Keep the backend's stored `is_pro` entitlement flag in sync with the real
-  // RevenueCat state. Every Pro-gated backend endpoint (e.g. Auto-Clean
-  // Scheduling) checks this stored flag rather than trusting the client, so
-  // it must be pushed whenever RevenueCat's view of the subscription changes.
-  // Guarded on identityReady so we never sync before the user's real
-  // identity (as opposed to an anonymous RevenueCat ID) is known.
-  useEffect(() => {
-    if (!rcEnabled || !identityReady) return;
-    api.syncEntitlement(isSubscribed).catch(() => {
-      // Best-effort: a failed sync just means the backend keeps its last
-      // known value until the next successful sync (e.g. next app open).
-    });
-  }, [identityReady, isSubscribed]);
-
+  const expiry = entitlementQuery.data?.expires_at;
+  const isSubscribed = identityReady && !entitlementQuery.isError &&
+    entitlementQuery.data?.is_pro === true && Boolean(expiry && Date.parse(expiry) > Date.now());
   return {
-    customerInfo: customerInfoQuery.data,
-    offerings: offeringsQuery.data,
-    isSubscribed,
-    identityReady,
-    identityError,
-    rcEnabled,
-    isLoading: customerInfoQuery.isLoading || offeringsQuery.isLoading,
-    purchase: purchaseMutation.mutateAsync,
-    restore: restoreMutation.mutateAsync,
-    isPurchasing: purchaseMutation.isPending,
-    isRestoring: restoreMutation.isPending,
+    offerings: offeringsQuery.data, isSubscribed, identityReady, identityError, rcEnabled,
+    isLoading: offeringsQuery.isLoading || (identityReady && entitlementQuery.isPending),
+    verificationError: entitlementQuery.error instanceof Error ? entitlementQuery.error.message : null,
+    retryVerification: verify,
+    purchase: purchaseMutation.mutateAsync, restore: restoreMutation.mutateAsync,
+    isPurchasing: purchaseMutation.isPending, isRestoring: restoreMutation.isPending,
   };
 }
-
 type SubscriptionContextValue = ReturnType<typeof useSubscriptionContext>;
 const Context = createContext<SubscriptionContextValue | null>(null);
-
 export function SubscriptionProvider({ children }: { children: React.ReactNode }) {
   const value = useSubscriptionContext();
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
-
 export function useSubscription() {
   const ctx = useContext(Context);
   if (!ctx) throw new Error("useSubscription must be used within a SubscriptionProvider");

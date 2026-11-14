@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, FadeIn } from 'react-native-reanimated';
 import { HealthRing } from '@/src/components/HealthRing';
-import { scanLocalDevice } from '@/src/deviceStorage';
+import { reportReading, scanLocalDevice } from '@/src/deviceStorage';
 import { theme } from '@/src/theme';
 
 const STEPS = ['Reading device storage', 'Measuring free space', 'Checking DevicePulse cache', 'Calculating storage health'];
@@ -34,6 +34,7 @@ export default function SmartScan() {
         try {
           const localResult = scanLocalDevice();
           setResult(localResult);
+          reportReading(localResult);
           setDone(true);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } catch {

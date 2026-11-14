@@ -6,7 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '@/src/api';
-import { clearDevicePulseCache, openDeviceStorageManager, scanLocalDevice, type LocalDeviceScan } from '@/src/deviceStorage';
+import { clearDevicePulseCache, openDeviceStorageManager, reportReading, scanLocalDevice, type LocalDeviceScan } from '@/src/deviceStorage';
 import { theme } from '@/src/theme';
 
 function formatMb(mb: number): string {
@@ -35,6 +35,7 @@ export default function Results() {
     try {
       const removedMb = clearDevicePulseCache();
       const after = scanLocalDevice();
+      reportReading(after);
       if (removedMb > 0) {
         try {
           await api.runClean({ categories: ['DevicePulse temporary cache'], reclaimable_mb: removedMb });

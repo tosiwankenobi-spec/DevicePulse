@@ -73,7 +73,7 @@ export default function Settings() {
             </View>
           )}
           {/* Pro banner */}
-          <Pressable onPress={() => router.push('/paywall')} testID="settings-pro-banner">
+          <Pressable onPress={() => router.push('/pro')} testID="settings-pro-banner">
             <LinearGradient colors={theme.gradients.brand} style={styles.proBanner} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
               <View style={{ flex: 1 }}>
                 <View style={styles.proTag}>
@@ -92,10 +92,10 @@ export default function Settings() {
               <Ionicons name="people-outline" size={20} color={theme.color.brand} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowLabel}>Family plan</Text>
-              <Text style={styles.rowDesc}>Cover up to 5 devices</Text>
+              <Text style={styles.rowLabel}>Family dashboard</Text>
+              <Text style={styles.rowDesc}>Consenting Pro members share readings</Text>
             </View>
-            <View style={styles.navBadge}><Text style={styles.navBadgeText}>Best value</Text></View>
+            <View style={styles.navBadge}><Text style={styles.navBadgeText}>Pro</Text></View>
             <Ionicons name="chevron-forward" size={18} color={theme.color.onSurface3} />
           </Pressable>
 
@@ -103,11 +103,11 @@ export default function Settings() {
           <View style={styles.card}>
             <NavRow icon="flame-outline" label="Storage-check streak" onPress={() => router.push('/streak')} testID="settings-streak" />
             <Divider />
-            <NavRow icon="time-outline" label="Verified cleanup history" badge="Pro" onPress={() => openProFeature('/history')} testID="settings-history" />
+            <NavRow icon="time-outline" label="Measured cleanup history" badge="Pro" onPress={() => openProFeature('/history')} testID="settings-history" />
             <Divider />
             <NavRow icon="gift-outline" label="Refer a friend" badge="Free Pro" onPress={() => router.push('/referral')} testID="settings-referral" />
             <Divider />
-            <NavRow icon="share-social-outline" label="Verified cleanup report" badge="Pro" onPress={() => openProFeature('/cleanup-report')} testID="settings-cleanup-report" />
+            <NavRow icon="share-social-outline" label="Measured cleanup report" badge="Pro" onPress={() => openProFeature('/cleanup-report')} testID="settings-cleanup-report" />
           </View>
 
           <Text style={styles.section}>Preferences</Text>

@@ -1,5 +1,7 @@
 import { Directory, Paths } from 'expo-file-system';
 import { Linking, Platform } from 'react-native';
+import * as Battery from 'expo-battery';
+import { api } from './api';
 
 const MB = 1024 * 1024;
 
@@ -20,7 +22,6 @@ export type LocalDeviceScan = {
 const toMb = (bytes: number) => Math.max(0, bytes / MB);
 
 function storageHealth(totalBytes: number, freeBytes: number): number {
-  if (!totalBytes) return 70;
   const freePct = (freeBytes / totalBytes) * 100;
   return Math.max(35, Math.min(98, Math.round(45 + freePct * 1.5)));
 }
@@ -29,9 +30,12 @@ export function scanLocalDevice(): LocalDeviceScan {
   const startedAt = new Date().toISOString();
   const totalBytes = Math.max(0, Paths.totalDiskSpace || 0);
   const freeBytes = Math.max(0, Paths.availableDiskSpace || 0);
+  if (!totalBytes) {
+    // Never substitute a guessed score when Android doesn't report disk size.
+    throw new Error('Storage reading unavailable');
+  }
   const cacheBytes = Math.max(0, Paths.cache.size || 0);
   const healthBefore = storageHealth(totalBytes, freeBytes);
-  const freeAfter = Math.min(totalBytes, freeBytes + cacheBytes);
 
   return {
     id: `local-${Date.now()}`,
@@ -43,9 +47,45 @@ export function scanLocalDevice(): LocalDeviceScan {
     storage_used_mb: toMb(Math.max(0, totalBytes - freeBytes)),
     storage_free_mb: toMb(freeBytes),
     health_before: healthBefore,
-    health_after: storageHealth(totalBytes, freeAfter),
+    // Re-measured after an actual cleanup; until then it equals the current reading.
+    health_after: healthBefore,
     source: 'device',
   };
+}
+
+/** Same as scanLocalDevice, but null when Android doesn't report storage. */
+export function tryScanLocalDevice(): LocalDeviceScan | null {
+  try {
+    return scanLocalDevice();
+  } catch {
+    return null;
+  }
+}
+
+/** Sends a real measured reading to the server, which derives every score,
+ * trend and forecast from these. Failures are ignored; nothing is guessed. */
+export async function reportReading(scan: LocalDeviceScan | null): Promise<void> {
+  if (!scan) return;
+  let battery_pct: number | null = null;
+  let charging: boolean | null = null;
+  try {
+    const power = await Battery.getPowerStateAsync();
+    battery_pct = power.batteryLevel >= 0 ? Math.round(power.batteryLevel * 100) : null;
+    charging = power.batteryState === Battery.BatteryState.CHARGING || power.batteryState === Battery.BatteryState.FULL;
+  } catch {
+    /* battery not exposed */
+  }
+  try {
+    await api.postReading({
+      storage_total_mb: scan.storage_total_mb,
+      storage_free_mb: scan.storage_free_mb,
+      cache_mb: scan.cache_mb,
+      battery_pct,
+      charging,
+    });
+  } catch {
+    /* offline or signed out: the reading stays on the phone */
+  }
 }
 
 export function clearDevicePulseCache(): number {

@@ -21,14 +21,14 @@ type Report = {
   share_code: string;
   generated_at: string;
   display_name: string;
-  health_score: number;
+  health_score: number | null;
   status: string;
   total_cleanups: number;
   total_reclaimed_mb: number;
   total_reclaimed_gb: number;
   current_streak_weeks: number;
   top_category: string | null;
-  days_until_full: number;
+  days_until_full: number | null;
 };
 
 const statusColor = (status: string) => {
@@ -129,13 +129,13 @@ export default function CleanupReport() {
               <View style={styles.statCard}>
                 <View style={styles.statRow}>
                   <View style={[styles.statusDot, { backgroundColor: statusColor(report.status) }]} />
-                  <Text style={styles.statValue}>{report.health_score}</Text>
+                  <Text style={styles.statValue}>{report.health_score ?? '--'}</Text>
                 </View>
                 <Text style={styles.statLabel}>{report.status}</Text>
               </View>
               <View style={styles.statCard}>
                 <Text style={styles.statValue}>
-                  {report.top_category ? report.top_category : `${report.days_until_full}d`}
+                  {report.top_category ? report.top_category : report.days_until_full != null ? `${report.days_until_full}d` : '--'}
                 </Text>
                 <Text style={styles.statLabel}>{report.top_category ? 'Top category' : 'Until full'}</Text>
               </View>

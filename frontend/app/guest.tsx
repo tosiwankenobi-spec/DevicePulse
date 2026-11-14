@@ -5,17 +5,18 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { HealthRing } from '@/src/components/HealthRing';
-import { scanLocalDevice } from '@/src/deviceStorage';
+import { tryScanLocalDevice } from '@/src/deviceStorage';
 import { theme } from '@/src/theme';
 
 export default function Guest() {
   const router = useRouter();
-  const device = scanLocalDevice();
-  const storagePct = device.storage_total_mb > 0 ? Math.round((device.storage_used_mb / device.storage_total_mb) * 100) : 0;
-  const freeGb = (device.storage_free_mb / 1024).toFixed(1);
+  const device = tryScanLocalDevice() ?? { storage_total_mb: 0, storage_used_mb: 0, storage_free_mb: 0, cache_mb: 0, health_before: 0 };
+  const known = device.storage_total_mb > 0;
+  const storagePct = known ? `${Math.round((device.storage_used_mb / device.storage_total_mb) * 100)}%` : '--';
+  const freeGb = known ? `${(device.storage_free_mb / 1024).toFixed(1)} GB` : '--';
   const stats = [
-    { label: 'Storage', value: `${storagePct}%`, icon: 'server-outline', color: theme.color.info },
-    { label: 'Free space', value: `${freeGb} GB`, icon: 'folder-open-outline', color: '#8B5CF6' },
+    { label: 'Storage', value: storagePct, icon: 'server-outline', color: theme.color.info },
+    { label: 'Free space', value: freeGb, icon: 'folder-open-outline', color: '#8B5CF6' },
     { label: 'App cache', value: `${device.cache_mb.toFixed(1)} MB`, icon: 'flash-outline', color: theme.color.warning },
     { label: 'Security', value: 'Review', icon: 'shield-checkmark-outline', color: theme.color.brand },
   ] as const;

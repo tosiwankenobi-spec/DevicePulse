@@ -25,12 +25,7 @@ type Msg = { role: 'user' | 'assistant'; content: string; created_at: string };
 export default function Coach() {
   const router = useRouter();
   const { isSubscribed } = useSubscription();
-  // Chat is a Pro feature. `__DEV__` is stripped to `false` in production
-  // builds (including a production web build), so this only unlocks chat
-  // for local/preview testing on web — never for real production users —
-  // unlike a blanket `Platform.OS === 'web'` check, which would leave the
-  // paywall bypassed for every real visitor on a live web deployment.
-  const chatUnlocked = isSubscribed || (__DEV__ && Platform.OS === 'web');
+  const chatUnlocked = isSubscribed;
 
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
@@ -42,7 +37,7 @@ export default function Coach() {
   const load = useCallback(async () => {
     try {
       const hist = await api.coachHistory().catch(() => []);
-      const local = scanLocalDevice();
+      const local = await scanLocalDevice();
       setHealth({
         score: local.health_before,
         storage_used_gb: local.storage_used_mb / 1024,

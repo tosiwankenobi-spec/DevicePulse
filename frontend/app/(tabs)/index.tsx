@@ -10,7 +10,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { GlassCard } from '@/src/components/GlassCard';
 import { HealthRing } from '@/src/components/HealthRing';
 import { VLogo } from '@/src/components/VLogo';
-import { scanLocalDevice, type LocalDeviceScan } from '@/src/deviceStorage';
+import { reportReading, tryScanLocalDevice, type LocalDeviceScan } from '@/src/deviceStorage';
 import { useAuth } from '@/src/AuthContext';
 import { theme } from '@/src/theme';
 
@@ -33,7 +33,9 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    setDevice(scanLocalDevice());
+    const scan = tryScanLocalDevice();
+    setDevice(scan);
+    reportReading(scan);
     try {
       const power = await Battery.getPowerStateAsync();
       setBatteryLevel(power.batteryLevel >= 0 ? Math.round(power.batteryLevel * 100) : null);

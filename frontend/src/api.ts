@@ -83,25 +83,9 @@ export const api = {
     req<any>('/register-push', { method: 'POST', body: JSON.stringify(body) }),
   testPush: () => req<any>('/push/test', { method: 'POST' }),
 
-  // Device (simulated)
-  health: () => req<any>('/device/health'),
-  storage: () => req<any>('/device/storage'),
-  duplicates: () => req<any[]>('/device/duplicates'),
-  scanDuplicates: () => req<any>('/device/duplicates/scan', { method: 'POST' }),
-  removeDuplicates: (groupIds: string[]) =>
-    req<any>('/device/duplicates/remove', { method: 'POST', body: JSON.stringify({ group_ids: groupIds }) }),
-  largeFiles: () => req<any[]>('/device/large-files'),
-  scanLargeFiles: () => req<any>('/device/large-files/scan', { method: 'POST' }),
-  deleteLargeFiles: (fileIds: string[]) =>
-    req<any>('/device/large-files/delete', { method: 'POST', body: JSON.stringify({ file_ids: fileIds }) }),
-  battery: () => req<any>('/device/battery'),
-  optimizeBattery: () => req<any>('/device/battery/optimize', { method: 'POST' }),
-  memory: () => req<any>('/device/memory'),
-  boostMemory: () => req<any>('/device/memory/boost', { method: 'POST' }),
-  security: () => req<any>('/device/security'),
-  scanSecurity: () => req<any>('/device/security/scan', { method: 'POST' }),
-  resolveSecurityFinding: (id: string) => req<any>(`/device/security/findings/${encodeURIComponent(id)}/resolve`, { method: 'POST' }),
-  runScan: () => req<any>('/device/scan', { method: 'POST' }),
+  // Device: the phone posts what it measured; the server never invents readings.
+  postReading: (body: { storage_total_mb: number; storage_free_mb: number; cache_mb: number; battery_pct: number | null; charging: boolean | null }) =>
+    req<{ ok: boolean; score: number }>('/device/readings', { method: 'POST', body: JSON.stringify(body) }),
   runClean: (body: { categories: string[]; reclaimable_mb: number }) =>
     req<any>('/device/clean', { method: 'POST', body: JSON.stringify(body) }),
   recommendations: (body: any) =>
@@ -117,10 +101,8 @@ export const api = {
     req<any>('/reminders', { method: 'PUT', body: JSON.stringify({ device_id: 'self', ...prefs }) }),
   streak: () => req<any>('/streak'),
   useFreeze: () => req<any>('/streak/freeze', { method: 'POST' }),
-  cacheBreakdown: () => req<any>('/device/cache-breakdown'),
   healthTrend: () => req<any>('/device/health-trend'),
   forecast: () => req<any>('/forecast'),
-  forecastQuickFix: () => req<any>('/forecast/quick-fix', { method: 'POST' }),
   pulseDaily: () => req<any>('/pulse/daily'),
   widgetSummary: () => req<any>('/widget/summary'),
   activeNudge: () => req<any>('/nudges/active'),
@@ -130,22 +112,22 @@ export const api = {
   joinFamily: (inviteCode: string) =>
     req<any>('/family/join', { method: 'POST', body: JSON.stringify({ invite_code: inviteCode }) }),
   leaveFamily: () => req<any>('/family/leave', { method: 'POST' }),
-  familyRemoteClean: (memberUserId: string) =>
-    req<any>(`/family/remote-clean/${encodeURIComponent(memberUserId)}`, { method: 'POST' }),
   reportMine: () => req<any>('/reports/mine'),
   generateReport: () => req<any>('/reports/generate', { method: 'POST' }),
 
   // Entitlements (Pro) — synced from the real RevenueCat state, see revenuecat.tsx
   myEntitlement: () => req<any>('/entitlements/me'),
-  syncEntitlement: (isPro: boolean) =>
-    req<any>('/entitlements/sync', { method: 'POST', body: JSON.stringify({ is_pro: isPro }) }),
+  syncEntitlement: () =>
+    req<{ is_pro: boolean; expires_at: string | null }>('/entitlements/sync', { method: 'POST', body: JSON.stringify({}) }),
+  proRoutines: () => req<{ routine_id: string; step_id: string; completed: boolean }[]>('/pro/routines'),
+  updateProRoutine: (routine_id: string, step_id: string, completed: boolean) =>
+    req('/pro/routines', { method: 'PUT', body: JSON.stringify({ routine_id, step_id, completed }) }),
 
   // Auto-Clean Scheduling (Pro-only)
   autoCleanSchedule: () => req<any>('/autoclean/schedule'),
   saveAutoCleanSchedule: (body: { enabled: boolean; frequency: string; day_of_week?: number; categories: string[] }) =>
     req<any>('/autoclean/schedule', { method: 'PUT', body: JSON.stringify(body) }),
   deleteAutoCleanSchedule: () => req<any>('/autoclean/schedule', { method: 'DELETE' }),
-  runAutoCleanIfDue: () => req<any>('/autoclean/run-if-due', { method: 'POST' }),
 
   // AI Health Coach
   coachDaily: () => req<any>('/coach/daily'),

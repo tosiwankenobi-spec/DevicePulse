@@ -10,13 +10,13 @@ import { api } from '@/src/api';
 type Size = 'small' | 'medium';
 
 type WidgetSummary = {
-  score: number;
-  status: string;
-  storage_used_pct: number;
-  storage_used_gb: number;
-  storage_total_gb: number;
-  battery_pct: number;
-  security_ok: boolean;
+  score: number | null;
+  status: string | null;
+  storage_used_pct: number | null;
+  storage_used_gb: number | null;
+  storage_total_gb: number | null;
+  battery_pct: number | null;
+  security_ok: boolean | null;
   updated_at: string;
 };
 
@@ -151,11 +151,11 @@ const SmallWidget = ({ summary, loading }: WidgetProps) => (
       {loading && !summary ? (
         <ActivityIndicator color={theme.color.onSurface} size="small" />
       ) : (
-        <Text style={styles.miniScore}>{summary ? summary.score : '--'}</Text>
+        <Text style={styles.miniScore}>{summary?.score ?? '--'}</Text>
       )}
     </View>
     <Text style={styles.widgetLabel}>DevicePulse</Text>
-    <Text style={styles.widgetSub}>{summary ? summary.status : 'Loading…'}</Text>
+    <Text style={styles.widgetSub}>{loading ? 'Loading…' : summary?.status ?? 'Run a Smart Scan'}</Text>
   </View>
 );
 
@@ -167,18 +167,18 @@ const MediumWidget = ({ summary, loading }: WidgetProps) => (
         {loading && !summary ? (
           <ActivityIndicator color={theme.color.onSurface} size="small" />
         ) : (
-          <Text style={styles.miniScore}>{summary ? summary.score : '--'}</Text>
+          <Text style={styles.miniScore}>{summary?.score ?? '--'}</Text>
         )}
       </View>
       <View style={{ flex: 1, marginLeft: 14 }}>
         <Text style={styles.widgetLabel}>Device Health</Text>
         <View style={styles.miniStat}>
           <Ionicons name="server-outline" size={13} color={theme.color.info} />
-          <Text style={styles.miniStatText}>Storage {summary ? `${summary.storage_used_pct}%` : '--'}</Text>
+          <Text style={styles.miniStatText}>Storage {summary?.storage_used_pct != null ? `${summary.storage_used_pct}%` : '--'}</Text>
         </View>
         <View style={styles.miniStat}>
           <Ionicons name="battery-half-outline" size={13} color={theme.color.warning} />
-          <Text style={styles.miniStatText}>Battery {summary ? `${summary.battery_pct}%` : '--'}</Text>
+          <Text style={styles.miniStatText}>Battery {summary?.battery_pct != null ? `${summary.battery_pct}%` : '--'}</Text>
         </View>
         <View style={styles.miniStat}>
           <Ionicons
@@ -186,7 +186,7 @@ const MediumWidget = ({ summary, loading }: WidgetProps) => (
             size={13}
             color={summary?.security_ok ? theme.color.brand : theme.color.warning}
           />
-          <Text style={styles.miniStatText}>{summary ? (summary.security_ok ? 'Secure' : 'Review needed') : '--'}</Text>
+          <Text style={styles.miniStatText}>{'Check in Settings'}</Text>
         </View>
       </View>
     </View>

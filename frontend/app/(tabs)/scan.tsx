@@ -57,6 +57,11 @@ export default function ScanHub() {
             </View>
           </Pressable>
 
+          <Pressable style={styles.toolRow} onPress={() => router.push('/pro')} testID="tool-pro">
+            <Ionicons name="sparkles" size={24} color={theme.color.brand} />
+            <View style={{ flex: 1 }}><Text style={styles.toolTitle}>DevicePulse Pro</Text><Text style={styles.toolDesc}>Coach, routines, history, reports & family</Text></View>
+            <Ionicons name="chevron-forward" size={18} color={theme.color.onSurface3} />
+          </Pressable>
           {sections.map((sec) => (
             <View key={sec}>
               <Text style={styles.sectionTitle}>{sec}</Text>
