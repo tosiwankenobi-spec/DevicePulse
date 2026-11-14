@@ -92,23 +92,56 @@ async def get_current_user(authorization: Optional[str] = Header(default=None)):
     return user
 
 
-def require_pro(user: dict) -> None:
-    """Enforce paid access from the server's verified entitlement state."""
-    if not user.get("is_pro", False):
-        raise HTTPException(status_code=403, detail="DevicePulse Pro is required")
+async def verified_pro(user: dict) -> dict:
+    """Always read canonical billing state; never authorize from a stored Boolean."""
+    if not REVENUECAT_SECRET_API_KEY:
+        raise HTTPException(503, "Subscription verification is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as rc:
+            response = await rc.get(
+                f"https://api.revenuecat.com/v1/subscribers/{quote(user['user_id'], safe='')}",
+                headers={"Authorization": f"Bearer {REVENUECAT_SECRET_API_KEY}", "Accept": "application/json"},
+            )
+        if response.status_code == 404:
+            subscriber = {}
+        else:
+            response.raise_for_status()
+            subscriber = response.json().get("subscriber", {})
+        entitlement = subscriber.get("entitlements", {}).get(REVENUECAT_ENTITLEMENT_ID) or {}
+        product = entitlement.get("product_identifier")
+        subscription = subscriber.get("subscriptions", {}).get(product) or {}
+        # Android paid subscriptions only: promotional/client grants cannot unlock Pro.
+        expiry = entitlement.get("grace_period_expires_date") or entitlement.get("expires_date")
+        expires_at = datetime.fromisoformat(expiry.replace("Z", "+00:00")) if expiry else None
+        if expires_at and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        sandbox = subscription.get("is_sandbox") is True
+        active = bool(subscription) and subscription.get("store") == "play_store" and bool(
+            expires_at and expires_at > datetime.now(timezone.utc)
+        ) and (not sandbox or os.environ.get("REVENUECAT_ALLOW_SANDBOX", "false").lower() == "true")
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        raise HTTPException(502, "Subscription verification is temporarily unavailable")
+    state = {"is_pro": bool(active), "expires_at": expires_at.isoformat() if expires_at else None,
+             "product_id": product, "verified_at": datetime.now(timezone.utc).isoformat()}
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {
+        "is_pro": state["is_pro"], "pro_expires_at": state["expires_at"], "pro_verified_at": state["verified_at"]
+    }})
+    return state
+
+
+async def require_pro(user: dict) -> None:
+    if not (await verified_pro(user))["is_pro"]:
+        raise HTTPException(403, "DevicePulse Pro is required")
 
 
 # ==================== Models ====================
 class DeviceHealth(BaseModel):
-    score: int
-    status: str
-    storage_used_gb: float
-    storage_total_gb: float
-    ram_used_pct: int
-    battery_pct: int
-    battery_health_pct: int
-    security_status: str
-    issues_found: int
+    score: Optional[int] = None
+    status: Optional[str] = None
+    storage_used_gb: Optional[float] = None
+    storage_total_gb: Optional[float] = None
+    battery_pct: Optional[int] = None
+    measured_at: Optional[str] = None
 
 class StorageBreakdown(BaseModel):
     category: str
@@ -266,10 +299,10 @@ class FamilyMemberSnapshot(BaseModel):
     name: str
     is_owner: bool
     joined_at: str
-    score: int
-    status: str  # Excellent | Good | Needs Attention | Poor
+    score: Optional[int] = None
+    status: Optional[str] = None  # Excellent | Good | Needs Attention | Poor
     streak_weeks: int
-    days_until_full: int
+    days_until_full: Optional[int] = None
 
 class FamilyGroup(BaseModel):
     id: str
@@ -284,17 +317,17 @@ class CleanupReport(BaseModel):
     share_code: str
     generated_at: str
     display_name: str
-    health_score: int
-    status: str  # Excellent | Good | Needs Attention | Poor
+    health_score: Optional[int] = None
+    status: Optional[str] = None  # Excellent | Good | Needs Attention | Poor
     total_cleanups: int
     total_reclaimed_mb: float
     total_reclaimed_gb: float
     current_streak_weeks: int
     top_category: Optional[str] = None
-    days_until_full: int
+    days_until_full: Optional[int] = None
 
 class EntitlementSync(BaseModel):
-    is_pro: bool
+    is_pro: Optional[bool] = None  # Legacy input ignored; never a billing authority.
 
 class AutoCleanSchedule(BaseModel):
     enabled: bool = True
@@ -340,22 +373,22 @@ class CoachInsight(BaseModel):
 
 class PulseDaily(BaseModel):
     date: str
-    score: int
-    status: str  # Excellent | Good | Needs Attention | Poor
+    score: Optional[int] = None
+    status: Optional[str] = None  # Excellent | Good | Needs Attention | Poor
     headline: str
     delta: int  # change vs yesterday's pulse score; 0 if no prior data
-    storage_used_pct: int
-    battery_pct: int
-    security_ok: bool
+    storage_used_pct: Optional[int] = None
+    battery_pct: Optional[int] = None
+    security_ok: Optional[bool] = None  # not measurable by the app; always None
 
 class WidgetSummary(BaseModel):
-    score: int
-    status: str  # Excellent | Good | Needs Attention | Poor
-    storage_used_pct: int
-    storage_used_gb: float
-    storage_total_gb: float
-    battery_pct: int
-    security_ok: bool
+    score: Optional[int] = None
+    status: Optional[str] = None  # Excellent | Good | Needs Attention | Poor
+    storage_used_pct: Optional[int] = None
+    storage_used_gb: Optional[float] = None
+    storage_total_gb: Optional[float] = None
+    battery_pct: Optional[int] = None
+    security_ok: Optional[bool] = None
     updated_at: str  # ISO timestamp of this computation — proves the widget is live
 
 class Nudge(BaseModel):
@@ -368,58 +401,47 @@ class Nudge(BaseModel):
 
 
 # ==================== Helpers ====================
-def _seed_health() -> DeviceHealth:
-    return DeviceHealth(
-        score=68,
-        status="Needs Attention",
-        storage_used_gb=94.2,
-        storage_total_gb=128.0,
-        ram_used_pct=72,
-        battery_pct=54,
-        battery_health_pct=87,
-        security_status="1 minor issue",
-        issues_found=7,
+class DeviceReadingIn(BaseModel):
+    storage_total_mb: float = Field(gt=0, le=4_194_304)
+    storage_free_mb: float = Field(ge=0, le=4_194_304)
+    cache_mb: Optional[float] = Field(default=None, ge=0, le=4_194_304)
+    battery_pct: Optional[int] = Field(default=None, ge=0, le=100)
+    charging: Optional[bool] = None
+
+
+def _storage_score(total_mb: float, free_mb: float) -> int:
+    """Same formula the phone uses, so both sides agree. Only ever applied to
+    a reading the phone actually measured."""
+    free_pct = (free_mb / total_mb) * 100 if total_mb else 0
+    return max(35, min(98, round(45 + free_pct * 1.5)))
+
+
+async def _latest_reading(user_id: str) -> Optional[dict]:
+    return await db.device_readings.find_one(
+        {"user_id": user_id}, {"_id": 0}, sort=[("measured_at", -1)]
     )
 
 
-def _compute_daily_pulse_score(cleanups: list) -> tuple:
-    """Deterministic, non-LLM health-score computation for the Daily Pulse Check
-    card. Rewards recent activity (cleaned up in the last 24h) and gently
-    penalizes long inactivity, anchored to the same baseline score used
-    elsewhere in the app (_seed_health)."""
-    now = datetime.now(timezone.utc)
-    last_cleanup_dt = None
-    cleanups_last_7d = 0
-    for d in cleanups:
-        try:
-            dt = datetime.fromisoformat(d["completed_at"])
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            continue
-        if last_cleanup_dt is None or dt > last_cleanup_dt:
-            last_cleanup_dt = dt
-        if (now - dt).days < 7:
-            cleanups_last_7d += 1
-
-    score = _seed_health().score + min(24, cleanups_last_7d * 6)
-    cleaned_last_24h = False
-    if last_cleanup_dt:
-        hours_since = (now - last_cleanup_dt).total_seconds() / 3600
-        if hours_since <= 24:
-            score += 5
-            cleaned_last_24h = True
-        elif hours_since > 24 * 7:
-            score -= 8
-    else:
-        score -= 5  # never cleaned up yet
-    score = max(40, min(97, score))
-    return score, cleaned_last_24h
+def _compute_daily_pulse_score(reading: Optional[dict]) -> tuple:
+    """Score from the latest real storage reading; (None, False) when the
+    phone hasn't reported one yet. No invented baseline."""
+    if not reading:
+        return None, False
+    return _storage_score(reading["storage_total_mb"], reading["storage_free_mb"]), False
 
 
-def _pulse_status_band(score: int) -> str:
+def _reading_used_pct(reading: Optional[dict]) -> Optional[int]:
+    if not reading:
+        return None
+    t = reading["storage_total_mb"]
+    return round((t - reading["storage_free_mb"]) / t * 100)
+
+
+def _pulse_status_band(score: Optional[int]) -> Optional[str]:
     """Shared score->status banding, used by both the Daily Pulse Check card
     and the live Home Screen Widget summary so their labels always agree."""
+    if score is None:
+        return None
     if score >= 85:
         return "Excellent"
     elif score >= 65:
@@ -430,13 +452,15 @@ def _pulse_status_band(score: int) -> str:
         return "Poor"
 
 
-def _pulse_headline(score: int, cleaned_last_24h: bool, storage_pct: int) -> str:
+def _pulse_headline(score: Optional[int], cleaned_last_24h: bool, storage_pct: Optional[int]) -> str:
+    if score is None:
+        return "Run a Smart Scan on your phone to get today's reading."
     if cleaned_last_24h:
         return "Nice work — you cleaned up recently and it shows."
     if score >= 85:
         return "Your device is in great shape today."
     if score >= 65:
-        if storage_pct >= 80:
+        if storage_pct is not None and storage_pct >= 80:
             return "Storage is getting tight — a quick scan would help."
         return "Looking solid. A quick scan keeps it that way."
     return "Your device could use some attention today."
@@ -446,31 +470,7 @@ NUDGE_DISMISS_COOLDOWN_HOURS = 24
 NUDGE_TYPES = {"storage_reclaim", "security", "storage_forecast"}
 
 
-def _estimate_reclaimable_mb(cleanups: list) -> float:
-    """Deterministic, non-LLM estimate of currently-reclaimable junk/cache/
-    duplicates. Junk re-accumulates over time after a cleanup (~35MB/hour),
-    capped at a plausible ceiling; a user who has never cleaned up is treated
-    as already at a steady-state amount of accumulated junk."""
-    now = datetime.now(timezone.utc)
-    last_cleanup_dt = None
-    for d in cleanups:
-        try:
-            dt = datetime.fromisoformat(d["completed_at"])
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            continue
-        if last_cleanup_dt is None or dt > last_cleanup_dt:
-            last_cleanup_dt = dt
-
-    if last_cleanup_dt is None:
-        return 1850.0
-
-    hours_since = (now - last_cleanup_dt).total_seconds() / 3600
-    return round(min(3600.0, hours_since * 35.0), 1)
-
-
-def _build_nudge_candidates(seed: DeviceHealth, reclaimable_mb: float, forecast: Optional[dict] = None) -> list:
+def _build_nudge_candidates(reclaimable_mb: float, forecast: Optional[dict] = None) -> list:
     """Smart Nudges: surface at most one nudge, and only when a condition
     actually crosses a threshold worth interrupting the user for — not on
     every open. Candidates are ranked by priority (lower = more urgent).
@@ -485,10 +485,10 @@ def _build_nudge_candidates(seed: DeviceHealth, reclaimable_mb: float, forecast:
     nudge under the app's current simulated baseline, which is a deliberately
     simpler starting set than a full multi-signal nudge engine — easy to
     extend with more candidates later)."""
-    security_ok = "issue" not in seed.security_status.lower()
+    security_ok = True  # the app cannot measure security state; never invent a finding
     candidates = []
 
-    if forecast and forecast.get("has_trend") and forecast["days_until_full"] <= FORECAST_ALERT_DAYS:
+    if forecast and forecast.get("has_trend") and forecast.get("days_until_full") is not None and forecast["days_until_full"] <= FORECAST_ALERT_DAYS:
         days = forecast["days_until_full"]
         candidates.append(Nudge(
             type="storage_forecast",
@@ -647,6 +647,8 @@ async def delete_account(user=Depends(get_current_user)):
     await db.referrals.delete_many({"device_id": uid})
     await db.reminders.delete_many({"device_id": uid})
     await db.freezes.delete_many({"device_id": uid})
+    await db.pro_routines.delete_many({"user_id": uid})
+    await db.coach_messages.delete_many({"user_id": uid})
     await db.cleanup_reports.delete_many({"user_id": uid})
     await db.autoclean_schedules.delete_many({"user_id": uid})
     await db.duplicate_groups.delete_many({"user_id": uid})
@@ -719,12 +721,36 @@ async def push_cleanup_reminder(user=Depends(get_current_user)):
 
 
 
+@api_router.post("/device/readings")
+async def post_device_reading(body: DeviceReadingIn, user=Depends(get_current_user)):
+    """The phone posts what it actually measured (disk totals via
+    expo-file-system, battery via expo-battery). Every score and forecast on
+    the server is derived from these rows only."""
+    if body.storage_free_mb > body.storage_total_mb:
+        raise HTTPException(422, "Free space can't exceed total storage")
+    doc = {**body.model_dump(), "user_id": user["user_id"],
+           "measured_at": datetime.now(timezone.utc).isoformat()}
+    await db.device_readings.insert_one(doc.copy())
+    return {"ok": True, "score": _storage_score(body.storage_total_mb, body.storage_free_mb)}
+
+
 @api_router.get("/device/health", response_model=DeviceHealth)
-async def get_device_health():
-    return _seed_health()
+async def get_device_health(user=Depends(get_current_user)):
+    r = await _latest_reading(user["user_id"])
+    if not r:
+        return DeviceHealth()
+    score, _ = _compute_daily_pulse_score(r)
+    t = r["storage_total_mb"]
+    return DeviceHealth(
+        score=score, status=_pulse_status_band(score),
+        storage_used_gb=round((t - r["storage_free_mb"]) / 1024, 1),
+        storage_total_gb=round(t / 1024, 1),
+        battery_pct=r.get("battery_pct"), measured_at=r.get("measured_at"),
+    )
 
 @api_router.get("/device/storage", response_model=StorageAnalysis)
 async def get_storage_analysis():
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     breakdown = [
         StorageBreakdown(category="Photos", size_gb=32.4, color="#10B981", pct=25.3),
         StorageBreakdown(category="Videos", size_gb=24.1, color="#0EA5E9", pct=18.8),
@@ -743,6 +769,7 @@ async def get_storage_analysis():
 
 @api_router.post("/device/scan", response_model=ScanResult)
 async def run_scan():
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     junk = round(random.uniform(680, 1200), 1)
     dups = round(random.uniform(320, 720), 1)
     large = round(random.uniform(800, 2200), 1)
@@ -773,17 +800,18 @@ async def run_clean(req: CleanupRequest, user=Depends(get_current_user)):
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.cleanups.insert_one(doc.copy())
+    score, _ = _compute_daily_pulse_score(await _latest_reading(user["user_id"]))
     return {
         "reclaimed_mb": req.reclaimable_mb,
         "categories": req.categories,
-        "health_after": min(97, 68 + int(req.reclaimable_mb / 120)),
-        "health_before": 68,
+        "health_after": score,
+        "health_before": None,
         "completed_at": doc["completed_at"],
     }
 
 @api_router.get("/history", response_model=List[HistoryEntry])
 async def get_history(user=Depends(get_current_user)):
-    require_pro(user)
+    await require_pro(user)
     device_id = user["user_id"]
     docs = await db.cleanups.find({"device_id": device_id}).sort("completed_at", -1).to_list(100)
     return [
@@ -798,7 +826,7 @@ async def get_history(user=Depends(get_current_user)):
 
 @api_router.get("/history/summary")
 async def get_history_summary(user=Depends(get_current_user)):
-    require_pro(user)
+    await require_pro(user)
     device_id = user["user_id"]
     docs = await db.cleanups.find({"device_id": device_id}).to_list(1000)
     total_reclaimed = sum(d.get("reclaimed_mb", 0.0) for d in docs)
@@ -1000,6 +1028,7 @@ async def use_freeze(user=Depends(get_current_user)):
 
 @api_router.get("/device/cache-breakdown")
 async def get_cache_breakdown(user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     apps = [
         {"app": "Instagram", "icon": "📷", "cache_mb": 342.6, "category": "Social"},
         {"app": "Chrome", "icon": "🌐", "cache_mb": 218.4, "category": "Browser"},
@@ -1018,121 +1047,71 @@ async def get_cache_breakdown(user=Depends(get_current_user)):
 
 @api_router.get("/device/health-trend")
 async def get_health_trend(user=Depends(get_current_user)):
-    device_id = user["user_id"]
-    docs = await db.cleanups.find({"device_id": device_id}).to_list(1000)
-    weeks_with = {}
-    for d in docs:
+    """Weekly points from real readings only (latest reading per ISO week)."""
+    uid = user["user_id"]
+    readings = await db.device_readings.find({"user_id": uid}, {"_id": 0}).sort("measured_at", 1).to_list(2000)
+    cleanups = await db.cleanups.find({"device_id": uid}).to_list(1000)
+    cleaned_weeks = set()
+    for d in cleanups:
         try:
-            iso = datetime.fromisoformat(d["completed_at"]).isocalendar()
-            key = (iso[0], iso[1])
-            weeks_with[key] = weeks_with.get(key, 0) + 1
+            iso = datetime.fromisoformat(d["completed_at"]).isocalendar(); cleaned_weeks.add((iso[0], iso[1]))
         except Exception:
             pass
+    weekly = {}
+    for r in readings:
+        try:
+            dt = datetime.fromisoformat(r["measured_at"])
+        except Exception:
+            continue
+        iso = dt.isocalendar()
+        weekly[(iso[0], iso[1])] = (dt, _storage_score(r["storage_total_mb"], r["storage_free_mb"]))
+    keys = sorted(weekly)[-8:]
+    points = [{"label": weekly[k][0].strftime("%b %d"), "score": weekly[k][1], "cleaned": k in cleaned_weeks} for k in keys]
+    if not points:
+        return {"points": [], "change": None, "current": None}
+    return {"points": points, "change": points[-1]["score"] - points[0]["score"], "current": points[-1]["score"]}
 
-    now = datetime.now(timezone.utc)
-    cur_iso = now.isocalendar()
-
-    def week_info(n):
-        ref = datetime.fromisocalendar(cur_iso[0], cur_iso[1], 1).replace(tzinfo=timezone.utc) - timedelta(weeks=n)
-        iso = ref.isocalendar()
-        return (iso[0], iso[1]), ref
-
-    points = []
-    score = 58
-    for i in range(7, -1, -1):
-        (wk, ref) = week_info(i)
-        if wk in weeks_with:
-            score = min(97, score + 8)
-        else:
-            score = max(45, score - 3)
-        points.append({
-            "label": ref.strftime("%b %d"),
-            "score": score,
-            "cleaned": wk in weeks_with,
-        })
-
-    first = points[0]["score"]
-    last = points[-1]["score"]
-    return {
-        "points": points,
-        "change": last - first,
-        "current": last,
-    }
-
-# ---------- Predictive Storage ----------
-# The daily fill rate is no longer a fixed constant: it's derived from how
-# long it's been since the user's last cleanup (the same idle-time signal
-# Smart Nudges uses for its reclaimable-junk estimate). A user who cleans up
-# regularly gets a slow, comfortable projection; a user who has let junk pile
-# up unchecked for weeks gets a fast one — which is what makes "at this rate
-# you'll run out of space in N days" an honest, personalized warning instead
-# of a canned number. Deterministic and capped, so it stays fully testable.
-DEFAULT_DAILY_GROWTH_GB = 0.3  # used only when there's no cleanup history yet to project from
 FORECAST_ALERT_DAYS = 14
 
 
-def _estimate_daily_growth_gb(cleanups: list) -> Optional[float]:
-    """Returns None when there isn't enough history yet to project a trend
-    (no cleanups on record) — mirrors the same "not enough signal" gating used
-    elsewhere (Coach's pattern insight, Nudges' storage_critical decision)."""
-    if not cleanups:
-        return None
-    now = datetime.now(timezone.utc)
-    last_cleanup_dt = None
-    for d in cleanups:
-        try:
-            dt = datetime.fromisoformat(d["completed_at"])
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            continue
-        if last_cleanup_dt is None or dt > last_cleanup_dt:
-            last_cleanup_dt = dt
-    if last_cleanup_dt is None:
-        return None
-    idle_days = max(0.0, (now - last_cleanup_dt).total_seconds() / 86400)
-    # 0.3 GB/day baseline, climbing toward 3.0 GB/day the longer junk/cache
-    # has been left unchecked, capped at 45 idle days.
-    growth = 0.3 + min(2.7, idle_days * (2.7 / 45))
-    return round(growth, 2)
-
-
 async def _compute_forecast(device_id: str) -> dict:
-    total_gb = 128.0
-    used_gb = 94.2  # seed baseline
-
-    # lifetime reclaimed reduces used slightly (capped)
-    docs = await db.cleanups.find({"device_id": device_id}).to_list(1000)
-    reclaimed_gb = min(20.0, sum(d.get("reclaimed_mb", 0.0) for d in docs) / 1024)
-    used_gb = max(20.0, used_gb - reclaimed_gb)
-    free_gb = round(total_gb - used_gb, 1)
-
-    trend_growth = _estimate_daily_growth_gb(docs)
-    daily_growth_gb = trend_growth if trend_growth is not None else DEFAULT_DAILY_GROWTH_GB
-    days_until_full = int(free_gb / daily_growth_gb) if daily_growth_gb > 0 else 999
-    projected_full = (datetime.now(timezone.utc) + timedelta(days=days_until_full))
-
-    # projection samples every 5 days until full (max 12 points)
+    """Days until full from the slope of real free-space readings. Needs at
+    least two readings a day or more apart; otherwise everything is None."""
+    readings = await db.device_readings.find(
+        {"user_id": device_id}, {"_id": 0}
+    ).sort("measured_at", 1).to_list(500)
+    empty = {"total_gb": None, "used_gb": None, "free_gb": None, "daily_growth_gb": None,
+             "days_until_full": None, "projected_full_date": None, "projection": [], "has_trend": False}
+    if not readings:
+        return empty
+    last = readings[-1]
+    total_gb = round(last["storage_total_mb"] / 1024, 1)
+    free_gb = round(last["storage_free_mb"] / 1024, 1)
+    used_gb = round(total_gb - free_gb, 1)
+    base = {**empty, "total_gb": total_gb, "used_gb": used_gb, "free_gb": free_gb}
+    first = readings[0]
+    try:
+        t0 = datetime.fromisoformat(first["measured_at"]); t1 = datetime.fromisoformat(last["measured_at"])
+    except Exception:
+        return base
+    days = (t1 - t0).total_seconds() / 86400
+    if len(readings) < 2 or days < 1:
+        return base
+    growth = (first["storage_free_mb"] - last["storage_free_mb"]) / 1024 / days
+    if growth <= 0.01:
+        return {**base, "daily_growth_gb": round(max(growth, 0), 2), "has_trend": True}
+    days_until_full = int(free_gb / growth)
     projection = []
-    d = 0
-    while d <= days_until_full and len(projection) < 13:
-        pu = min(total_gb, used_gb + daily_growth_gb * d)
+    step = max(1, days_until_full // 12)
+    for d in range(0, days_until_full + 1, step):
+        pu = min(total_gb, used_gb + growth * d)
         projection.append({"day": d, "used_gb": round(pu, 1), "pct": round(pu / total_gb * 100)})
-        d += max(1, days_until_full // 12)
-
-    if projection[-1]["day"] < days_until_full:
-        projection.append({"day": days_until_full, "used_gb": total_gb, "pct": 100})
-
-    return {
-        "total_gb": total_gb,
-        "used_gb": round(used_gb, 1),
-        "free_gb": free_gb,
-        "daily_growth_gb": daily_growth_gb,
-        "days_until_full": days_until_full,
-        "projected_full_date": projected_full.strftime("%b %d, %Y"),
-        "projection": projection,
-        "has_trend": trend_growth is not None,
-    }
+        if len(projection) >= 13:
+            break
+    projection.append({"day": days_until_full, "used_gb": total_gb, "pct": 100})
+    return {**base, "daily_growth_gb": round(growth, 2), "days_until_full": days_until_full,
+            "projected_full_date": (datetime.now(timezone.utc) + timedelta(days=days_until_full)).strftime("%b %d, %Y"),
+            "projection": projection, "has_trend": True}
 
 
 @api_router.get("/forecast")
@@ -1142,6 +1121,7 @@ async def get_forecast(user=Depends(get_current_user)):
 
 @api_router.post("/forecast/quick-fix")
 async def forecast_quick_fix(user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """The roadmap's "one-tap fix": runs an immediate simulated cleanup sized
     to the user's own reclaimable-junk estimate (same estimator Smart Nudges
     uses), no category picker or extra screen required, and returns the
@@ -1174,19 +1154,17 @@ async def pulse_daily(user=Depends(get_current_user)):
     if cached:
         return PulseDaily(**{k: v for k, v in cached.items() if k not in ("user_id",)})
 
-    cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
-    score, cleaned_last_24h = _compute_daily_pulse_score(cleanups)
-
-    seed = _seed_health()
-    storage_pct = round(seed.storage_used_gb / seed.storage_total_gb * 100)
-    security_ok = "issue" not in seed.security_status.lower()
+    reading = await _latest_reading(user_id)
+    score, cleaned_last_24h = _compute_daily_pulse_score(reading)
+    storage_pct = _reading_used_pct(reading)
+    security_ok = None
 
     status = _pulse_status_band(score)
     headline = _pulse_headline(score, cleaned_last_24h, storage_pct)
 
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     prev = await db.pulse_daily.find_one({"user_id": user_id, "date": yesterday}, {"_id": 0, "score": 1})
-    delta = (score - prev["score"]) if prev else 0
+    delta = (score - prev["score"]) if (prev and prev.get("score") is not None and score is not None) else 0
 
     card = PulseDaily(
         date=today,
@@ -1195,12 +1173,13 @@ async def pulse_daily(user=Depends(get_current_user)):
         headline=headline,
         delta=delta,
         storage_used_pct=storage_pct,
-        battery_pct=seed.battery_pct,
+        battery_pct=reading.get("battery_pct") if reading else None,
         security_ok=security_ok,
     )
-    doc = card.model_dump()
-    doc["user_id"] = user_id
-    await db.pulse_daily.insert_one(doc.copy())
+    if score is not None:  # only cache a day once it holds a real reading
+        doc = card.model_dump()
+        doc["user_id"] = user_id
+        await db.pulse_daily.insert_one(doc.copy())
     return card
 
 # ---------- Home Screen Widget (live) ----------
@@ -1213,21 +1192,18 @@ async def pulse_daily(user=Depends(get_current_user)):
 @api_router.get("/widget/summary", response_model=WidgetSummary)
 async def widget_summary(user=Depends(get_current_user)):
     user_id = user["user_id"]
-    cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
-    score, _cleaned_last_24h = _compute_daily_pulse_score(cleanups)
-
-    seed = _seed_health()
-    storage_pct = round(seed.storage_used_gb / seed.storage_total_gb * 100)
-    security_ok = "issue" not in seed.security_status.lower()
+    reading = await _latest_reading(user_id)
+    score, _cleaned_last_24h = _compute_daily_pulse_score(reading)
+    t = reading["storage_total_mb"] if reading else None
 
     return WidgetSummary(
         score=score,
         status=_pulse_status_band(score),
-        storage_used_pct=storage_pct,
-        storage_used_gb=seed.storage_used_gb,
-        storage_total_gb=seed.storage_total_gb,
-        battery_pct=seed.battery_pct,
-        security_ok=security_ok,
+        storage_used_pct=_reading_used_pct(reading),
+        storage_used_gb=round((t - reading["storage_free_mb"]) / 1024, 1) if reading else None,
+        storage_total_gb=round(t / 1024, 1) if reading else None,
+        battery_pct=reading.get("battery_pct") if reading else None,
+        security_ok=None,
         updated_at=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -1240,11 +1216,10 @@ async def widget_summary(user=Depends(get_current_user)):
 @api_router.get("/nudges/active", response_model=Optional[Nudge])
 async def get_active_nudge(user=Depends(get_current_user)):
     user_id = user["user_id"]
-    cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
-    reclaimable_mb = _estimate_reclaimable_mb(cleanups)
-    seed = _seed_health()
+    reading = await _latest_reading(user_id)
+    reclaimable_mb = float((reading or {}).get("cache_mb") or 0)  # measured cache only
     forecast = await _compute_forecast(user_id)
-    candidates = _build_nudge_candidates(seed, reclaimable_mb, forecast)
+    candidates = _build_nudge_candidates(reclaimable_mb, forecast)
     if not candidates:
         return None
 
@@ -1296,7 +1271,7 @@ async def _build_family_snapshot(group_id: str) -> list:
         uid = m["user_id"]
         u = await db.users.find_one({"user_id": uid}, {"_id": 0})
         cleanups = await db.cleanups.find({"device_id": uid}).to_list(1000)
-        score, _cleaned_last_24h = _compute_daily_pulse_score(cleanups)
+        score, _cleaned_last_24h = _compute_daily_pulse_score(await _latest_reading(uid))
         streak_data = await _compute_streak_data(uid)
         forecast = await _compute_forecast(uid)
         out.append(FamilyMemberSnapshot(
@@ -1342,7 +1317,7 @@ async def get_family_group(user=Depends(get_current_user)):
     every user in their own solo group, which would then block them from
     joining someone else's family without first "leaving" a group they never
     knew they had. POST /family/create is the explicit action instead."""
-    require_pro(user)
+    await require_pro(user)
     user_id = user["user_id"]
     membership = await db.family_memberships.find_one({"user_id": user_id})
     if not membership:
@@ -1359,7 +1334,7 @@ async def get_family_group(user=Depends(get_current_user)):
 
 @api_router.post("/family/create", response_model=FamilyGroup)
 async def create_family_group(user=Depends(get_current_user)):
-    require_pro(user)
+    await require_pro(user)
     user_id = user["user_id"]
     if await db.family_memberships.find_one({"user_id": user_id}):
         raise HTTPException(400, "You're already in a family plan")
@@ -1383,7 +1358,7 @@ async def create_family_group(user=Depends(get_current_user)):
 
 @api_router.post("/family/join", response_model=FamilyGroup)
 async def join_family(req: JoinFamilyRequest, user=Depends(get_current_user)):
-    require_pro(user)
+    await require_pro(user)
     user_id = user["user_id"]
     existing = await db.family_memberships.find_one({"user_id": user_id})
     if existing:
@@ -1428,11 +1403,12 @@ async def leave_family(user=Depends(get_current_user)):
 
 @api_router.post("/family/remote-clean/{member_user_id}")
 async def family_remote_clean(member_user_id: str, user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """The "remote management" action: the family plan owner runs an
     immediate simulated cleanup on a member's actual account (same
     reclaimable estimate Smart Nudges/Predictive Storage use), and the
     member gets a push notification about it."""
-    require_pro(user)
+    await require_pro(user)
     user_id = user["user_id"]
     membership = await db.family_memberships.find_one({"user_id": user_id})
     if not membership or membership["role"] != "owner":
@@ -1497,7 +1473,7 @@ async def _build_cleanup_report(user: dict) -> dict:
     user_id = user["user_id"]
     cleanups = await db.cleanups.find({"device_id": user_id}).to_list(1000)
     total_reclaimed_mb = sum(d.get("reclaimed_mb", 0.0) for d in cleanups)
-    score, _cleaned_last_24h = _compute_daily_pulse_score(cleanups)
+    score, _cleaned_last_24h = _compute_daily_pulse_score(await _latest_reading(user_id))
     streak_data = await _compute_streak_data(user_id)
     forecast = await _compute_forecast(user_id)
     first_name = (user.get("name") or "A DevicePulse user").strip().split(" ")[0] or "A DevicePulse user"
@@ -1538,7 +1514,7 @@ def _report_public_view(doc: dict) -> CleanupReport:
 
 @api_router.get("/reports/mine", response_model=Optional[CleanupReport])
 async def get_my_latest_report(user=Depends(get_current_user)):
-    require_pro(user)
+    await require_pro(user)
     docs = await db.cleanup_reports.find(
         {"user_id": user["user_id"]}, {"_id": 0}
     ).sort("generated_at", -1).to_list(1)
@@ -1549,7 +1525,7 @@ async def get_my_latest_report(user=Depends(get_current_user)):
 
 @api_router.post("/reports/generate", response_model=CleanupReport)
 async def generate_cleanup_report(user=Depends(get_current_user)):
-    require_pro(user)
+    await require_pro(user)
     doc = await _build_cleanup_report(user)
     await db.cleanup_reports.insert_one(doc.copy())
     return _report_public_view(doc)
@@ -1672,10 +1648,11 @@ async def view_public_report_page(share_code: str):
     stats = []
     stats.append(_REPORT_STAT.format(value=doc["total_cleanups"], label="Cleanups"))
     stats.append(_REPORT_STAT.format(value=f'{doc["current_streak_weeks"]}wk', label="Streak"))
-    stats.append(_REPORT_STAT.format(value=f'{doc["health_score"]}/100', label=html.escape(doc["status"])))
+    if doc.get("health_score") is not None:
+        stats.append(_REPORT_STAT.format(value=f'{doc["health_score"]}/100', label=html.escape(doc.get("status") or "")))
     if doc.get("top_category"):
         stats.append(_REPORT_STAT.format(value=html.escape(doc["top_category"]), label="Top category"))
-    else:
+    elif doc.get("days_until_full") is not None:
         stats.append(_REPORT_STAT.format(value=f'{doc["days_until_full"]}d', label="Until storage full"))
 
     description = (
@@ -1693,52 +1670,38 @@ async def view_public_report_page(share_code: str):
 
 
 # ==================== Entitlements (Pro) ====================
-# Production verifies the authenticated RevenueCat app-user ID server-side.
-# Local/test environments may still use client sync so the app can be
-# developed without storing a RevenueCat secret on a workstation.
-
 @api_router.get("/entitlements/me")
 async def get_my_entitlement(user=Depends(get_current_user)):
-    return {"is_pro": bool(user.get("is_pro", False))}
+    return await verified_pro(user)
 
 @api_router.post("/entitlements/sync")
 async def sync_entitlement(body: EntitlementSync, user=Depends(get_current_user)):
-    is_pro = body.is_pro
-    if REVENUECAT_SECRET_API_KEY:
-        app_user_id = quote(user["user_id"], safe="")
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as revenuecat:
-                response = await revenuecat.get(
-                    f"https://api.revenuecat.com/v1/subscribers/{app_user_id}",
-                    headers={
-                        "Authorization": f"Bearer {REVENUECAT_SECRET_API_KEY}",
-                        "Accept": "application/json",
-                    },
-                )
-            if response.status_code == 404:
-                is_pro = False
-            else:
-                response.raise_for_status()
-                entitlement = (
-                    response.json()
-                    .get("subscriber", {})
-                    .get("entitlements", {})
-                    .get(REVENUECAT_ENTITLEMENT_ID)
-                )
-                expires_at = entitlement.get("expires_date") if entitlement else None
-                is_pro = bool(entitlement) and (
-                    expires_at is None
-                    or datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-                    > datetime.now(timezone.utc)
-                )
-        except (httpx.HTTPError, ValueError, TypeError):
-            logging.exception("RevenueCat entitlement verification failed")
-            raise HTTPException(502, "Subscription verification is temporarily unavailable")
-    elif ENVIRONMENT == "production":
-        raise HTTPException(503, "Subscription verification is not configured")
+    return await verified_pro(user)
 
-    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"is_pro": is_pro}})
-    return {"is_pro": is_pro}
+# Pro routines store only user-checked completion flags, never file or device claims.
+PRO_ROUTINE_STEPS = {"storage": {"measure", "review", "cache"},
+                     "battery": {"usage", "background", "recheck"},
+                     "privacy": {"permissions", "updates", "sessions"}}
+
+class ProRoutineUpdate(BaseModel):
+    routine_id: str
+    step_id: str
+    completed: bool
+
+@api_router.get("/pro/routines")
+async def get_pro_routines(user=Depends(get_current_user)):
+    await require_pro(user)
+    rows = await db.pro_routines.find({"user_id": user["user_id"]}, {"_id": 0, "user_id": 0}).to_list(20)
+    return rows
+
+@api_router.put("/pro/routines")
+async def update_pro_routine(body: ProRoutineUpdate, user=Depends(get_current_user)):
+    await require_pro(user)
+    if body.step_id not in PRO_ROUTINE_STEPS.get(body.routine_id, set()):
+        raise HTTPException(422, "Unknown routine step")
+    key = {"user_id": user["user_id"], "routine_id": body.routine_id, "step_id": body.step_id}
+    await db.pro_routines.update_one(key, {"$set": {**key, "completed": body.completed}}, upsert=True)
+    return {"routine_id": body.routine_id, "step_id": body.step_id, "completed": body.completed}
 
 
 # ==================== Auto-Clean Scheduling (Pro-only) ====================
@@ -1784,8 +1747,7 @@ async def get_autoclean_schedule(user=Depends(get_current_user)):
 async def save_autoclean_schedule(body: AutoCleanSchedule, user=Depends(get_current_user)):
     """Upsert (mirrors PUT /reminders) — Pro-gated using the STORED
     entitlement flag, never a value the caller supplies."""
-    if not user.get("is_pro", False):
-        raise HTTPException(403, "Auto-Clean Scheduling is a Pro feature")
+    await require_pro(user)
     _validate_autoclean_schedule(body)
     user_id = user["user_id"]
     existing = await db.autoclean_schedules.find_one({"user_id": user_id})
@@ -1836,6 +1798,7 @@ def _autoclean_is_due(schedule: dict, now: datetime) -> bool:
 
 @api_router.post("/autoclean/run-if-due", response_model=AutoCleanRunResult)
 async def run_autoclean_if_due(user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """The 'lazy cron' pattern used throughout this app (Daily Pulse Check,
     Coach Insights, Nudges): there's no real background scheduler in this
     sandbox, so 'due' is checked and acted on whenever the client calls this
@@ -1847,7 +1810,7 @@ async def run_autoclean_if_due(user=Depends(get_current_user)):
         return AutoCleanRunResult(ran=False, reason="no_schedule")
     if not schedule.get("enabled", True):
         return AutoCleanRunResult(ran=False, reason="disabled")
-    if not user.get("is_pro", False):
+    if not (await verified_pro(user))["is_pro"]:
         # The schedule itself is left alone (not deleted) so it resumes
         # exactly as configured if the user re-subscribes.
         return AutoCleanRunResult(ran=False, reason="not_pro")
@@ -1947,6 +1910,7 @@ def _duplicate_group_out(d: dict) -> DuplicateGroupOut:
 
 @api_router.get("/device/duplicates", response_model=List[DuplicateGroupOut])
 async def get_duplicate_groups(user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """Generates a user's initial AI-scanned duplicate groups once, lazily,
     on first read, and persists them — so unlike the old endpoint, revisiting
     this screen shows the same groups instead of a freshly-randomized set."""
@@ -1961,6 +1925,7 @@ async def get_duplicate_groups(user=Depends(get_current_user)):
 
 @api_router.post("/device/duplicates/scan", response_model=DuplicateScanResult)
 async def scan_duplicate_groups(user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """Runs another AI scan, simulating newly-taken duplicate/burst photos
     found since the last scan — appends to (never replaces) the pending list."""
     uid = user["user_id"]
@@ -1972,6 +1937,7 @@ async def scan_duplicate_groups(user=Depends(get_current_user)):
 
 @api_router.post("/device/duplicates/remove", response_model=DuplicateRemoveResult)
 async def remove_duplicate_groups(req: DuplicateRemoveRequest, user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     uid = user["user_id"]
     if not req.group_ids:
         raise HTTPException(400, "group_ids is required")
@@ -1984,7 +1950,7 @@ async def remove_duplicate_groups(req: DuplicateRemoveRequest, user=Depends(get_
     if missing:
         raise HTTPException(404, f"Unknown or already-removed group id(s): {', '.join(missing)}")
 
-    if not user.get("is_pro", False):
+    if not (await verified_pro(user))["is_pro"]:
         now = datetime.now(timezone.utc)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         removed_docs = await db.duplicate_groups.find({"user_id": uid, "status": "removed"}).to_list(1000)
@@ -2136,6 +2102,7 @@ async def _build_security_scan(user_id: str, current_token: str) -> SecurityScan
 
 @api_router.get("/device/security", response_model=SecurityScanOut)
 async def get_security(user=Depends(get_current_user), authorization: Optional[str] = Header(default=None)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     uid = user["user_id"]
     cur_token = authorization.split(" ", 1)[1].strip() if authorization and authorization.startswith("Bearer ") else ""
 
@@ -2165,6 +2132,7 @@ async def get_security(user=Depends(get_current_user), authorization: Optional[s
 
 @api_router.post("/device/security/scan", response_model=SecurityScanResult)
 async def scan_security(user=Depends(get_current_user), authorization: Optional[str] = Header(default=None)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     uid = user["user_id"]
     cur_token = authorization.split(" ", 1)[1].strip() if authorization and authorization.startswith("Bearer ") else ""
 
@@ -2189,6 +2157,7 @@ async def scan_security(user=Depends(get_current_user), authorization: Optional[
 
 @api_router.post("/device/security/findings/{finding_id}/resolve")
 async def resolve_security_finding(finding_id: str, user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """Only device-level findings live in this collection — a session
     finding's id is derived (\"session-{sid}\") and is resolved by revoking
     the session itself via POST /auth/sessions/{sid}/revoke, not this route."""
@@ -2267,6 +2236,7 @@ def _battery_state_out(doc: dict) -> BatteryStateOut:
 
 @api_router.get("/device/battery", response_model=BatteryStateOut)
 async def get_battery(user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """Generates a user's initial battery state once, lazily, on first read,
     and persists it — so unlike the old endpoint, revisiting this screen
     shows the same numbers instead of an identical hardcoded fixture."""
@@ -2276,9 +2246,10 @@ async def get_battery(user=Depends(get_current_user)):
 
 @api_router.post("/device/battery/optimize", response_model=BatteryOptimizeResult)
 async def optimize_battery(user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """Pro-gated via the same stored is_pro flag as Auto-Clean Scheduling —
     matches what paywall.tsx already promises for 'Battery optimizer'."""
-    if not user.get("is_pro", False):
+    if not (await verified_pro(user))["is_pro"]:
         raise HTTPException(403, "Battery Optimizer is a Pro feature")
     uid = user["user_id"]
     doc = await _get_or_init_battery_state(uid)
@@ -2355,6 +2326,7 @@ def _large_file_out(d: dict) -> LargeFileOut:
 
 @api_router.get("/device/large-files", response_model=List[LargeFileOut])
 async def get_large_files(user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """Generates a user's initial large-file list once, lazily, on first
     read, and persists it to Mongo — so unlike the old endpoint, revisiting
     this screen shows the same files instead of an identical fixed array."""
@@ -2369,6 +2341,7 @@ async def get_large_files(user=Depends(get_current_user)):
 
 @api_router.post("/device/large-files/scan", response_model=LargeFileScanResult)
 async def scan_large_files(user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """Simulates newly-detected large files since the last scan — appends to
     (never replaces) the pending list, same pattern as Duplicate Photo AI."""
     uid = user["user_id"]
@@ -2380,6 +2353,7 @@ async def scan_large_files(user=Depends(get_current_user)):
 
 @api_router.post("/device/large-files/delete", response_model=LargeFileDeleteResult)
 async def delete_large_files(req: LargeFileDeleteRequest, user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     uid = user["user_id"]
     if not req.file_ids:
         raise HTTPException(400, "file_ids is required")
@@ -2469,6 +2443,7 @@ def _memory_state_out(doc: dict) -> MemoryStateOut:
 
 @api_router.get("/device/memory", response_model=MemoryStateOut)
 async def get_memory_state(user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """Generates a user's initial RAM state once, lazily, on first read, and
     persists it — same lazy-generate-and-persist pattern as Battery Health &
     Optimizer, so revisiting this screen shows stable numbers."""
@@ -2478,6 +2453,7 @@ async def get_memory_state(user=Depends(get_current_user)):
 
 @api_router.post("/device/memory/boost", response_model=MemoryBoostResult)
 async def boost_memory(user=Depends(get_current_user)):
+    raise HTTPException(status_code=410, detail="Not available: this reading is only shown from the phone itself.")
     """Closes the top RAM-consuming background apps and frees the
     corresponding share of used RAM. Free for everyone — no Pro gate."""
     uid = user["user_id"]
@@ -2691,7 +2667,7 @@ async def coach_daily(user=Depends(get_current_user)):
 
 @api_router.get("/coach/history", response_model=List[CoachMessage])
 async def coach_history(user=Depends(get_current_user)):
-    require_pro(user)
+    await require_pro(user)
     user_id = user["user_id"]
     docs = await db.coach_messages.find({"user_id": user_id}).sort("created_at", 1).to_list(200)
     return [CoachMessage(role=d["role"], content=d["content"], created_at=d["created_at"]) for d in docs]
@@ -2705,7 +2681,7 @@ async def coach_clear(user=Depends(get_current_user)):
 
 @api_router.post("/coach/chat", response_model=CoachMessage)
 async def coach_chat(req: CoachChatRequest, request: Request, user=Depends(get_current_user)):
-    require_pro(user)
+    await require_pro(user)
     client_key = user["user_id"]
     if not _allow_ai_call(client_key):
         raise HTTPException(429, "Too many messages. Please wait a moment and try again.")
@@ -2715,6 +2691,8 @@ async def coach_chat(req: CoachChatRequest, request: Request, user=Depends(get_c
         raise HTTPException(422, "Message cannot be empty")
     message = message[:1000]
 
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(503, "Personalized Coach is unavailable. Please try again later.")
     user_id = user["user_id"]
     now = datetime.now(timezone.utc).isoformat()
 
@@ -2741,7 +2719,7 @@ async def coach_chat(req: CoachChatRequest, request: Request, user=Depends(get_c
         "You remember the user's history and reference it naturally to feel personal and continuous. "
         "Keep replies concise (2-4 sentences), warm, and actionable. Suggest concrete DevicePulse actions "
         "(Smart Scan, duplicate cleanup, junk cleanup, large-file finder, battery insights) when relevant. "
-        "Never invent scary claims; the app simulates cleanup for safety. If asked about non-device topics, gently steer back.\n\n"
+        "Never invent readings, scanned files, battery health or cleanup results. Only DevicePulse-owned cache can be cleared; personal files require review in Android. If asked about non-device topics, gently steer back.\n\n"
         f"USER MEMORY (their history):\n{memory}\n\n"
         f"LIVE DEVICE STATS:\n{live_ctx}\n\n"
         f"RECENT CONVERSATION:\n{convo if convo else '(this is the first message)'}"
@@ -2917,6 +2895,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 @app.on_event("startup")
 async def create_indexes():
     try:
+        await db.pro_routines.create_index([("user_id", 1), ("routine_id", 1), ("step_id", 1)], unique=True)
         await db.users.create_index("email", unique=True)
         await db.users.create_index("user_id", unique=True)
         await db.user_sessions.create_index("session_token", unique=True)
